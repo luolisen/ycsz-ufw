@@ -1,0 +1,3 @@
+PASS TLS 1.2 pinned certificate and framed heartbeat
+PASS mismatched certificate pin rejected
+RESULT 2/2 real loopback TLS transport probes passed on this host runtime

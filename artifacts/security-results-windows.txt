@@ -1,0 +1,40 @@
+PASS isolated manager configuration initialized
+RESULT 1 Windows checks passed
+PASS production NSIS service creation and configuration
+PASS LocalSystem auto-start and quoted executable path
+PASS fixture identity is a standard user
+PASS standard user cannot read protected credentials
+PASS standard user cannot overwrite installed executable
+PASS standard user cannot overwrite PowerShell helper
+PASS standard user denied service access 32
+PASS standard user denied service access 2
+PASS standard user denied service access 65536
+PASS standard user cannot acquire service terminate handle
+PASS standard user can query IPC status
+PASS unauthenticated management command rejected
+PASS forged management session rejected
+PASS password-authorized standard user management works
+PASS logout invalidates management session
+PASS TLS enrollment independent device LAB-SAME
+PASS TLS enrollment independent device LAB-SAME
+PASS authenticated name heartbeat accepted
+PASS repeated registration idempotent
+PASS bundle cannot authenticate device heartbeat
+PASS shared bundle cannot overwrite device credential
+PASS second device heartbeat accepted
+PASS manager exposes two independent named devices
+PASS revoked device heartbeat rejected
+PASS revoked device cannot restore itself via universal bundle
+PASS universal ZIP contains installer and encrypted enrollment
+PASS export is reusable without device identity
+PASS disabled bundle blocks new devices
+PASS disabling bundle preserves existing device heartbeat
+PASS client scanner terminates harmless proxy-name fixture and reports
+PASS client scanner leaves unrelated process running
+RESULT 29 Windows checks passed
+PASS SCM restarts terminated service with new PID
+PASS independent devices persisted across service crash
+PASS authenticated computer name persisted
+PASS revocation persisted
+RESULT 3 Windows checks passed
+RESULT disposable Windows manager security checks passed; client WFP/network enforcement not exercised

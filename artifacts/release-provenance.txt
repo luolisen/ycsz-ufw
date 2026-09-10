@@ -1,0 +1,8 @@
+Version: v0.2.0 engineering preview
+Windows build/test source commit: ab73edea7d0f6d8613b15cfc735d2014cb4ea565
+Windows workflow: https://github.com/luolisen/ycsz-ufw/actions/runs/34515610735
+Published EXE files are copied unchanged from the successful Windows workflow artifact.
+Text result files were converted from UTF-16 to UTF-8 with trailing whitespace removed.
+Local installer-build.txt and client-installer-build.txt describe the separate Mono/NSIS validation build, not the released Windows-built EXE hashes.
+Full and client NSIS payloads verified; only text line-ending differences are normalized.
+Recovery document retained unchanged in repository, delivery ZIP and Release attachment.
