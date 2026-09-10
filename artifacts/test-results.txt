@@ -32,4 +32,14 @@ PASS deleted empty hosts differs from existing empty hosts
 PASS absent hosts cannot carry contradictory content
 PASS failed network revision does not repeat after restart
 PASS applied and empty network commands are not repeated
-RESULT 34/34 passed; Windows integration NOT executed
+PASS one universal bundle creates independent same-name machines
+PASS registration retry preserves policy and identity after serialization
+PASS shared bundle cannot overwrite another machine identity
+PASS revoked node cannot re-enroll with old identity
+PASS disabled and incorrect bundle tokens reject registration
+PASS malformed machine data rejected before state mutation
+PASS device quota enforced but authenticated retries still allowed
+PASS pending identity must match bundle endpoint and certificate
+PASS legacy enrollment remains readable
+PASS universal bundle never is a device credential
+RESULT 44/44 passed; Windows integration NOT executed

@@ -4,7 +4,7 @@ Unicode true
 !include "WinVer.nsh"
 Name "YCSZ 教育机房防火墙"
 !ifndef OUTPUT_FILE
-!define OUTPUT_FILE "../artifacts/Ycsz-Setup-0.1.0-x64.exe"
+!define OUTPUT_FILE "../artifacts/Ycsz-Setup-0.2.0-x64.exe"
 !endif
 OutFile "${OUTPUT_FILE}"
 InstallDir "$PROGRAMFILES64\YcszFirewall"
@@ -12,10 +12,10 @@ RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
-VIProductVersion "0.1.0.0"
+VIProductVersion "0.2.0.0"
 VIAddVersionKey /LANG=2052 "ProductName" "YCSZ 教育机房防火墙"
 VIAddVersionKey /LANG=2052 "FileDescription" "YCSZ 原生 Windows 客户端与管理端安装程序"
-VIAddVersionKey /LANG=2052 "FileVersion" "0.1.0"
+VIAddVersionKey /LANG=2052 "FileVersion" "0.2.0"
 VIAddVersionKey /LANG=2052 "LegalCopyright" "YCSZ contributors"
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME
@@ -80,10 +80,19 @@ Section "YCSZ" SEC_MAIN
   !insertmacro RepairPayloadAcl "PLAN.md"
   !insertmacro RepairPayloadAcl "Uninstall.exe"
   !insertmacro RepairPayloadAcl "docs"
+  !insertmacro RepairPayloadAcl "Ycsz-Client-Setup.exe"
+  !insertmacro RepairPayloadAcl "client.ycsz"
   File "../artifacts/app/Ycsz.exe"
   File "../artifacts/app/Ycsz.Core.dll"
   File "../artifacts/app/Ycsz.exe.config"
   File "../artifacts/app/System.ps1"
+!ifndef CLIENT_ONLY
+  File "../artifacts/Ycsz-Client-Setup.exe"
+!else
+  ${If} ${FileExists} "$EXEDIR\client.ycsz"
+    CopyFiles /SILENT "$EXEDIR\client.ycsz" "$INSTDIR\client.ycsz"
+  ${EndIf}
+!endif
   File "../README.md"
   File "../TASK.md"
   File "../PLAN.md"
@@ -98,13 +107,18 @@ Section "YCSZ" SEC_MAIN
     MessageBox MB_ICONSTOP "安装目录所有者设置失败，安装已停止。"
     Abort
   ${EndIf}
+!ifdef CLIENT_ONLY
+  ExecWait '"$INSTDIR\Ycsz.exe" --setup-client' $0
+!else
   ExecWait '"$INSTDIR\Ycsz.exe" --setup' $0
+!endif
   ${If} $0 != 0
     MessageBox MB_ICONSTOP "初始化未完成。未启动服务；请查看错误后重试。安装文件保留在安装目录。"
     Abort
   ${EndIf}
+  Delete "$INSTDIR\client.ycsz"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "DisplayName" "YCSZ 教育机房防火墙"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "DisplayVersion" "0.1.0"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "DisplayVersion" "0.2.0"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "Publisher" "YCSZ"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "UninstallString" '"$INSTDIR\Uninstall.exe"'
@@ -195,6 +209,8 @@ Section "Uninstall"
   Delete /REBOOTOK "$INSTDIR\Ycsz.Core.dll"
   Delete "$INSTDIR\Ycsz.exe.config"
   Delete "$INSTDIR\System.ps1"
+  Delete "$INSTDIR\Ycsz-Client-Setup.exe"
+  Delete "$INSTDIR\client.ycsz"
   Delete "$INSTDIR\README.md"
   Delete "$INSTDIR\TASK.md"
   Delete "$INSTDIR\PLAN.md"

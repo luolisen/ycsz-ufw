@@ -9,7 +9,7 @@ $app = @(Get-ChildItem src\Ycsz.App\*.cs | ForEach-Object FullName)
 $tests = @(Get-ChildItem src\Ycsz.Tests\*.cs | ForEach-Object FullName)
 & $csc /nologo /target:library /optimize+ /warnaserror /out:artifacts\app\Ycsz.Core.dll /r:System.Web.Extensions.dll /r:System.Core.dll $core
 if ($LASTEXITCODE) { throw 'Core compile failed' }
-& $csc /nologo /platform:x64 /target:winexe /optimize+ /warnaserror /win32manifest:src\Ycsz.App\app.manifest /out:artifacts\app\Ycsz.exe /r:artifacts\app\Ycsz.Core.dll /r:System.Core.dll /r:System.Security.dll /r:System.ServiceProcess.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Xml.dll /r:System.Xml.Linq.dll $app
+& $csc /nologo /platform:x64 /target:winexe /optimize+ /warnaserror /win32manifest:src\Ycsz.App\app.manifest /out:artifacts\app\Ycsz.exe /r:artifacts\app\Ycsz.Core.dll /r:System.Core.dll /r:System.Security.dll /r:System.ServiceProcess.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Xml.dll /r:System.Xml.Linq.dll $app
 if ($LASTEXITCODE) { throw 'Application compile failed' }
 Copy-Item src\Ycsz.App\App.config artifacts\app\Ycsz.exe.config -Force
 Copy-Item scripts\System.ps1 artifacts\app\System.ps1 -Force
@@ -21,11 +21,20 @@ if ($LASTEXITCODE) { throw 'Tests failed' }
 if ($LASTEXITCODE) { throw 'TLS probe compile failed' }
 & ./scripts/Test-Tls.ps1 -Probe (Resolve-Path artifacts\app\TlsProbe.exe).Path | Tee-Object artifacts\tls-results-windows.txt
 & ./scripts/Test-NetworkLogic.ps1 | Tee-Object artifacts\network-logic-results-windows.txt
+& $csc /nologo /platform:x64 /target:exe /optimize+ /warnaserror /out:artifacts\app\SecurityProbe.exe /r:artifacts\app\Ycsz.Core.dll /r:artifacts\app\Ycsz.exe /r:System.Core.dll /r:System.Security.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll src\Ycsz.Probes\SecurityProbe.cs
+if ($LASTEXITCODE) { throw 'Security probe compile failed' }
+Get-ChildItem artifacts\app | Select-Object Name,Length | Format-Table
+if (!(Test-Path artifacts\app\Ycsz.exe)) {
+    Get-MpThreatDetection -ErrorAction SilentlyContinue | Select-Object ThreatID,ActionSuccess,Resources | Format-List
+    throw 'Application binary missing after tests; inspect host protection logs.'
+}
 if (!$SkipInstaller) {
     $nsis = (Get-Command makensis.exe -ErrorAction SilentlyContinue).Source
     if (!$nsis) { $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe" }
     if (!(Test-Path $nsis)) { throw 'Install NSIS 3 using its official installer or choco install nsis.' }
+    & $nsis /INPUTCHARSET UTF8 /V3 /DCLIENT_ONLY /DOUTPUT_FILE=../artifacts/Ycsz-Client-Setup.exe installer\Ycsz.nsi | Tee-Object artifacts\client-installer-build-windows.txt
+    if ($LASTEXITCODE) { throw 'Client installer build failed' }
     & $nsis /INPUTCHARSET UTF8 /V3 installer\Ycsz.nsi | Tee-Object artifacts\installer-build-windows.txt
     if ($LASTEXITCODE) { throw 'Installer build failed' }
-    Get-FileHash artifacts\Ycsz-Setup-0.1.0-x64.exe,artifacts\app\Ycsz.exe,artifacts\app\Ycsz.Core.dll -Algorithm SHA256 | Format-Table -AutoSize | Out-String | Set-Content artifacts\SHA256SUMS-WINDOWS.txt
+    Get-FileHash artifacts\Ycsz-Setup-0.2.0-x64.exe,artifacts\app\Ycsz.exe,artifacts\app\Ycsz.Core.dll -Algorithm SHA256 | Format-Table -AutoSize | Out-String | Set-Content artifacts\SHA256SUMS-WINDOWS.txt
 }

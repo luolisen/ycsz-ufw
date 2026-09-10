@@ -9,7 +9,7 @@ import zipfile
 
 root = Path(__file__).resolve().parent.parent
 artifacts = root / 'artifacts'
-installer = artifacts / 'Ycsz-Setup-0.1.0-x64.exe'
+installer = artifacts / 'Ycsz-Setup-0.2.0-x64.exe'
 sevenzip = shutil.which('7zz') or shutil.which('7z')
 if not sevenzip:
     raise SystemExit('Install 7-Zip to verify NSIS contents.')
@@ -20,6 +20,7 @@ def run(*args):
     return result
 run(sevenzip, 't', str(installer))
 expected = {
+    'Ycsz-Client-Setup.exe': artifacts/'Ycsz-Client-Setup.exe',
     'Ycsz.exe': artifacts/'app/Ycsz.exe',
     'Ycsz.Core.dll': artifacts/'app/Ycsz.Core.dll',
     'Ycsz.exe.config': artifacts/'app/Ycsz.exe.config',
@@ -39,7 +40,7 @@ with tempfile.TemporaryDirectory(prefix='ycsz-package-') as folder:
         logs.append('PASS payload matches build: '+name+'\n')
     if not (Path(folder)/'Uninstall.exe').exists():
         raise SystemExit('Uninstaller missing')
-logs.append('RESULT NSIS CRC/decompression and 9 payload comparisons passed; installer was NOT executed on Windows.\n')
+logs.append('RESULT NSIS CRC/decompression and 10 payload comparisons passed; installer was NOT executed on Windows.\n')
 (artifacts/'package-results.txt').write_text(''.join(logs), encoding='utf-8')
 
 files = []
@@ -48,10 +49,10 @@ for directory in ['src', 'scripts', 'installer', 'docs', '.github']:
 files.extend(root/name for name in ['README.md','TASK.md','PLAN.md','.gitignore'])
 files.append(installer)
 files.extend(p for p in artifacts.iterdir() if p.is_file() and (p.suffix == '.txt' or p.name == 'SHA256SUMS'))
-archive = artifacts/'Ycsz-0.1.0-delivery.zip'
+archive = artifacts/'Ycsz-0.2.0-delivery.zip'
 with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as out:
     for path in sorted(set(files)):
-        out.write(path, str(Path('Ycsz-0.1.0')/path.relative_to(root)))
+        out.write(path, str(Path('Ycsz-0.2.0')/path.relative_to(root)))
 checks = ''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in [installer,archive])
 (artifacts/'DELIVERY-SHA256SUMS').write_text(checks,encoding='ascii')
 print(logs[-1].strip())

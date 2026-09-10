@@ -33,7 +33,8 @@ namespace Ycsz {
                 using (var tls = new SslStream(tcp.GetStream(),false,(sender,cert,chain,errors) => CertificateAccepted(cert,enrollment.CertificateHash))) {
                     tls.ReadTimeout = 12000; tls.WriteTimeout = 12000;
                     tls.AuthenticateAsClient(enrollment.Host,null,SslProtocols.Tls12,false);
-                    packet.Id = enrollment.ClientId; packet.Token = enrollment.Token; Send(tls,packet); return Receive(tls);
+                    if(packet.Name==null) packet.Name = Environment.MachineName;
+                    if(packet.Op!="register") { packet.Id = enrollment.ClientId; packet.Token = enrollment.Token; } Send(tls,packet); return Receive(tls);
                 }
             }
         }

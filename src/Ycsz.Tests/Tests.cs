@@ -10,6 +10,9 @@ static class Tests {
     static void Is(bool value) { if(!value) throw new Exception("assertion failed"); }
     static void Throws(Action body) { bool caught=false; try { body(); } catch { caught=true; } Is(caught); }
     static NetworkSnapshot Snapshot() { return new NetworkSnapshot { HostsBase64=Convert.ToBase64String(new byte[]{35,10}),Adapters=new[]{new AdapterSnapshot { Id="7a04db5c-f8d7-45c7-a5d5-f258917218ed",Name="Ethernet",Enabled=true,Dhcp=true,DnsAutomatic=true,Bindings=new[]{"ms_tcpip","ms_tcpip6"} }} }; }
+    static Enrollment Bundle() { return new Enrollment { Universal=true,BundleId=Guid.NewGuid().ToString("N"),Host="192.0.2.10",CertificateHash=new string('a',64),Token=Crypto.Token() }; }
+    static ManagerState Registry(Enrollment e) { var s=new ManagerState(); s.Bundles.Add(new EnrollmentBundle { Id=e.BundleId,Token=e.Token }); return s; }
+    static Packet Register(Enrollment b,Enrollment n) { return new Packet { Op="register",Id=n.ClientId,BundleId=b.BundleId,Token=b.Token,Data=n.Token,Name=n.Name }; }
     static int Main() {
         Test("all 20 requested executable names covered",()=> { Is(Defaults.Processes.Count==20); foreach(var name in new[]{"V2RAY.EXE","xray.exe","shadowsocks-libev.exe","server-win.exe","trojan.exe","hysteria.exe","hy.exe","tuic-client.exe","tuic-server.exe","sing-box.exe","mihomo.exe","clash.exe","naiveproxy.exe","v2rayN.exe","clash for windows.exe","clash-verge.exe","mihomo-party.exe","netch.exe","furious.exe","hiddify.exe"}) Is(Defaults.Processes.ContainsKey(name)); Is(!Defaults.Processes.ContainsKey("my-v2ray.exe")); });
         Test("password salt and verification",()=> { var a=Crypto.HashPassword("test-only-password-123"); var b=Crypto.HashPassword("test-only-password-123"); Is(a.Salt!=b.Salt && a.Hash!=b.Hash); Is(Crypto.Verify("test-only-password-123",a)); Is(!Crypto.Verify("wrong",a)); Is(!Crypto.Verify(null,a)); });
@@ -56,6 +59,43 @@ static class Tests {
             Is(!NetworkCommandGate.ShouldApply(new Policy { Network=Snapshot(),NetworkRevision=3 },3,2));
             Is(!NetworkCommandGate.ShouldApply(new Policy { NetworkRevision=4 },0,0));
         });
+        Test("one universal bundle creates independent same-name machines",()=> {
+            var bundle=Bundle(); var state=Registry(bundle); var a=EnrollmentRegistry.NewIdentity(bundle,"LAB-PC"); var b=EnrollmentRegistry.NewIdentity(bundle,"LAB-PC");
+            EnrollmentRegistry.Register(state,Register(bundle,a)); EnrollmentRegistry.Register(state,Register(bundle,b));
+            Is(state.Clients.Count==2 && a.ClientId!=b.ClientId && a.Token!=b.Token && a.Token!=bundle.Token);
+            Is(state.Clients.All(c=>c.Name=="LAB-PC"));
+        });
+        Test("registration retry preserves policy and identity after serialization",()=> {
+            var bundle=Bundle(); var state=Registry(bundle); var a=EnrollmentRegistry.NewIdentity(bundle,"LAB-01"); var node=EnrollmentRegistry.Register(state,Register(bundle,a)); node.Policy.Thawed=true; node.Policy.Revision=7;
+            state=Json.Copy(state); var retry=EnrollmentRegistry.Register(state,Register(bundle,a)); Is(state.Clients.Count==1 && retry.Policy.Thawed && retry.Policy.Revision==7);
+        });
+        Test("shared bundle cannot overwrite another machine identity",()=> {
+            var bundle=Bundle(); var state=Registry(bundle); var a=EnrollmentRegistry.NewIdentity(bundle,"LAB-01"); EnrollmentRegistry.Register(state,Register(bundle,a));
+            var bad=Register(bundle,a); bad.Data=Crypto.Token(); Throws(()=>EnrollmentRegistry.Register(state,bad)); Is(state.Clients[0].Token==a.Token);
+        });
+        Test("revoked node cannot re-enroll with old identity",()=> {
+            var bundle=Bundle(); var state=Registry(bundle); var a=EnrollmentRegistry.NewIdentity(bundle,"LAB-01"); EnrollmentRegistry.Register(state,Register(bundle,a)).Revoked=true;
+            Throws(()=>EnrollmentRegistry.Register(state,Register(bundle,a))); Is(state.Clients[0].Revoked);
+        });
+        Test("disabled and incorrect bundle tokens reject registration",()=> {
+            var bundle=Bundle(); var state=Registry(bundle); var a=EnrollmentRegistry.NewIdentity(bundle,"LAB-01"); var request=Register(bundle,a); request.Token=Crypto.Token();
+            Throws(()=>EnrollmentRegistry.Register(state,request)); state.Bundles.Clear(); Throws(()=>EnrollmentRegistry.Register(state,Register(bundle,a))); Is(state.Clients.Count==0);
+        });
+        Test("malformed machine data rejected before state mutation",()=> {
+            var bundle=Bundle(); var state=Registry(bundle); var a=EnrollmentRegistry.NewIdentity(bundle,"LAB-01");
+            foreach(var name in new[]{"",new string('a',64),"bad\nname"," padded"}) { var p=Register(bundle,a); p.Name=name; Throws(()=>EnrollmentRegistry.Register(state,p)); }
+            var bad=Register(bundle,a); bad.Id="../settings"; Throws(()=>EnrollmentRegistry.Register(state,bad)); bad=Register(bundle,a); bad.Data="short"; Throws(()=>EnrollmentRegistry.Register(state,bad)); Is(state.Clients.Count==0);
+        });
+        Test("device quota enforced but authenticated retries still allowed",()=> {
+            var bundle=Bundle(); var state=Registry(bundle); var a=EnrollmentRegistry.NewIdentity(bundle,"LAB-01"); EnrollmentRegistry.Register(state,Register(bundle,a));
+            while(state.Clients.Count<64) state.Clients.Add(new ClientState { Id=Guid.NewGuid().ToString("N") });
+            Throws(()=>EnrollmentRegistry.Register(state,Register(bundle,EnrollmentRegistry.NewIdentity(bundle,"LAB-65")))); Is(EnrollmentRegistry.Register(state,Register(bundle,a)).Id==a.ClientId);
+        });
+        Test("pending identity must match bundle endpoint and certificate",()=> {
+            var bundle=Bundle(); var a=EnrollmentRegistry.NewIdentity(bundle,"LAB-01"); Is(EnrollmentRegistry.SameBundle(a,bundle)); bundle.CertificateHash=new string('b',64); Is(!EnrollmentRegistry.SameBundle(a,bundle));
+        });
+        Test("legacy enrollment remains readable",()=> { var legacy=EnrollmentRegistry.NewIdentity(Bundle(),"LAB-01"); legacy.BundleId=null; EnrollmentRegistry.Validate(Json.Copy(legacy)); });
+        Test("universal bundle never is a device credential",()=> { var bundle=Bundle(); EnrollmentRegistry.Validate(bundle); Is(bundle.ClientId==null); var node=EnrollmentRegistry.NewIdentity(bundle,"LAB-01"); Is(!node.Universal); });
         Console.WriteLine("RESULT "+(count-failed)+"/"+count+" passed; Windows integration NOT executed"); return failed==0?0:1;
     }
 }

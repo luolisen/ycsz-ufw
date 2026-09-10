@@ -9,3 +9,7 @@ artifacts/*.mdb
 *.suo
 *.pfx
 *.ycsz
+
+.DS_Store
+.codex/
+*.tmp

@@ -15,7 +15,7 @@ namespace Ycsz {
         volatile bool stopping; Thread thread;
         public Manager(Settings s) {
             settings=s; state=Store.Load<ManagerState>("manager.bin");
-            foreach(var node in state.Clients) if(Store.Exists("node-"+node.Id+".bin")) { var saved=Store.Load<ClientState>("node-"+node.Id+".bin"); node.Network=saved.Network; node.Events=saved.Events; node.LastSeen=saved.LastSeen; node.Status=saved.Status; node.AppliedRevision=saved.AppliedRevision; node.AppliedNetworkRevision=saved.AppliedNetworkRevision; }
+            foreach(var node in state.Clients) if(Store.Exists("node-"+node.Id+".bin")) { var saved=Store.Load<ClientState>("node-"+node.Id+".bin"); node.Name=saved.Name??node.Name; node.Network=saved.Network; node.Events=saved.Events; node.LastSeen=saved.LastSeen; node.Status=saved.Status; node.AppliedRevision=saved.AppliedRevision; node.AppliedNetworkRevision=saved.AppliedNetworkRevision; }
             certificate=new X509Certificate2(Store.PathFor("manager.pfx"),s.PfxPassword,X509KeyStorageFlags.MachineKeySet);
             listener=new TcpListener(IPAddress.Any,s.Port); listener.Start(32);
             thread=new Thread(Accept) { IsBackground=true }; thread.Start();
@@ -40,21 +40,27 @@ namespace Ycsz {
         }
         Packet Heartbeat(Packet p) {
             lock(sync) {
+                if(p.Op=="register") {
+                    var before=Json.Copy(state);
+                    try { var registered=EnrollmentRegistry.Register(state,p); SaveIndex(); return new Packet { Ok=true,Policy=Json.Copy(registered.Policy) }; }
+                    catch(Exception e) { state=before; Store.Log("Registration rejected: "+e.GetType().Name); return new Packet { Error="注册被拒绝：接入包无效、设备身份冲突或容量已满" }; }
+                }
                 var node=state.Clients.FirstOrDefault(c=>c.Id==p.Id);
                 if (p.Op!="heartbeat" || node==null || node.Revoked || !Crypto.EqualText(node.Token,p.Token)) return new Packet { Error="认证失败" };
                 if (p.Events==null || p.Events.Count>64 || (p.Status!=null && p.Status.Length>2048)) return new Packet { Error="消息无效" };
                 if(p.Network!=null) p.Network.Validate();
+                string computerName=p.Name==null?node.Name:EnrollmentRegistry.ComputerName(p.Name);
                 foreach(var item in p.Events) if(item==null || item.Id==null || item.Id.Length>64 || item.Kind==null || item.Kind.Length>64 || item.Detail==null || item.Detail.Length>1024 || item.Utc==null || item.Utc.Length>64) return new Packet { Error="事件无效" };
                 foreach(var item in p.Events) if(!node.Events.Any(e=>e.Id==item.Id)) node.Events.Add(item);
                 if(node.Events.Count>200) node.Events.RemoveRange(0,node.Events.Count-200);
-                node.LastSeen=DateTime.UtcNow.ToString("o"); node.Status=p.Status; node.Network=p.Network;
+                node.Name=computerName; node.LastSeen=DateTime.UtcNow.ToString("o"); node.Status=p.Status; node.Network=p.Network;
                 node.AppliedRevision=p.Revision; node.AppliedNetworkRevision=p.NetworkRevision;
                 Store.Save("node-"+node.Id+".bin",node);
                 return new Packet { Ok=true,Policy=Json.Copy(node.Policy) };
             }
         }
         void SaveIndex() {
-            var index=new ManagerState { Allow=state.Allow.ToList(),Clients=state.Clients.Select(c=>new ClientState { Id=c.Id,Name=c.Name,Token=c.Token,Revoked=c.Revoked,Policy=Json.Copy(c.Policy) }).ToList() };
+            var index=new ManagerState { Bundles=state.Bundles,Allow=state.Allow.ToList(),Clients=state.Clients.Select(c=>new ClientState { Id=c.Id,Name=c.Name,Token=c.Token,BundleId=c.BundleId,Revoked=c.Revoked,Policy=Json.Copy(c.Policy) }).ToList() };
             Store.Save("manager.bin",index);
         }
         ClientState Find(string id) { var node=state.Clients.FirstOrDefault(c=>c.Id==id); if(node==null) throw new ArgumentException("客户端不存在"); return node; }
@@ -71,7 +77,13 @@ namespace Ycsz {
                 try {
                 if(p.Op=="set-allow") {
                     state.Allow=Rules.Validate(Json.Decode<List<string>>(p.Data)); foreach(var c in state.Clients) { c.Policy.Allow=state.Allow.ToList(); c.Policy.Revision++; }
-                } else if(p.Op=="thaw") { var node=Find(p.Id); node.Policy.Thawed=p.Thawed; node.Policy.Revision++; }
+                } else if(p.Op=="create-bundle") {
+                    if(state.Bundles.Count>=32) throw new InvalidOperationException("通用包最多 32 个；请先停用旧接入包");
+                    IPAddress host; if(!IPAddress.TryParse(p.Data,out host) || host.AddressFamily!=AddressFamily.InterNetwork || IPAddress.IsLoopback(host) || host.Equals(IPAddress.Any)) throw new ArgumentException("请输入管理端固定 IPv4 地址");
+                    var bundle=new EnrollmentBundle { Id=Guid.NewGuid().ToString("N"),Token=Crypto.Token() }; state.Bundles.Add(bundle); SaveIndex();
+                    return new Packet { Ok=true,Data=Json.Encode(new Enrollment { Universal=true,BundleId=bundle.Id,Token=bundle.Token,Host=host.ToString(),Port=settings.Port,CertificateHash=settings.CertificateHash }) };
+                } else if(p.Op=="disable-bundles") { state.Bundles.Clear(); }
+                else if(p.Op=="thaw") { var node=Find(p.Id); node.Policy.Thawed=p.Thawed; node.Policy.Revision++; }
                 else if(p.Op=="set-network") {
                     if(p.Network==null) throw new ArgumentException("缺少网络配置"); p.Network.Validate(); var node=Find(p.Id);
                     if(node.Network==null) throw new InvalidOperationException("客户端尚未报告网络基线");

@@ -61,9 +61,10 @@ namespace Ycsz {
             var actions=new FlowLayoutPanel { Dock=DockStyle.Top,Height=48,Padding=new Padding(6) };
             actions.Controls.Add(Theme.Button("刷新",async(s,e)=>await RefreshData()));
             if(role=="manager") {
-                actions.Controls.Add(Theme.Button("注册客户端",async(s,e)=>await Enroll()));
+                actions.Controls.Add(Theme.Button("生成通用客户端包",async(s,e)=>await Enroll()));
                 actions.Controls.Add(Theme.Button("解冻出口",async(s,e)=>await Thaw(true)));
                 actions.Controls.Add(Theme.Button("冻结出口",async(s,e)=>await Thaw(false)));
+                actions.Controls.Add(Theme.Button("停用通用接入包",async(s,e)=> { if(MessageBox.Show("停用所有已导出的通用接入包？已注册设备不受影响；新安装需重新生成通用包。","停用接入包",MessageBoxButtons.YesNo)==DialogResult.Yes) await Perform(()=>Call("disable-bundles")); }));
                 actions.Controls.Add(Theme.Button("撤销接入",async(s,e)=>await Revoke()));
                 clients.Dock=DockStyle.Fill; clients.ReadOnly=true; clients.AllowUserToAddRows=false; clients.AllowUserToDeleteRows=false; clients.MultiSelect=false; clients.SelectionMode=DataGridViewSelectionMode.FullRowSelect; clients.AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.Fill; clients.BackgroundColor=Color.White; clients.RowHeadersVisible=false; clients.AutoGenerateColumns=false;
                 foreach(var col in new[]{new[]{"Name","设备名称"},new[]{"LastSeen","最近在线 UTC"},new[]{"Status","防护状态"}}) clients.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName=col[0],HeaderText=col[1] });
@@ -119,10 +120,10 @@ namespace Ycsz {
         }
         async Task Enroll() {
             using(var dialog=new EnrollmentForm()) if(dialog.ShowDialog(this)==DialogResult.OK) {
-                var name=dialog.ClientName; var host=dialog.HostAddress; var pass=dialog.ExportPassword;
-                using(var save=new SaveFileDialog { Filter="加密客户端注册包|*.ycsz",FileName="client-"+DateTime.Now.ToString("yyyyMMdd-HHmmss")+".ycsz" }) if(save.ShowDialog(this)==DialogResult.OK) {
+                var host=dialog.HostAddress; var pass=dialog.ExportPassword;
+                using(var save=new SaveFileDialog { Filter="通用客户端安装包|*.zip",FileName="Ycsz-Client-"+DateTime.Now.ToString("yyyyMMdd-HHmmss")+".zip" }) if(save.ShowDialog(this)==DialogResult.OK) {
                     string filename=save.FileName;
-                    await Perform(()=> { var p=Ipc.Call(new Packet { Op="enroll",Token=token,Name=name,Data=host }); File.WriteAllBytes(filename,Crypto.Seal(p.Data,pass)); return new Packet { Ok=true,Status="注册包已加密保存；请通过受控方式交付" }; });
+                    await Perform(()=> { ClientPackage.CheckInstaller(); var p=Ipc.Call(new Packet { Op="create-bundle",Token=token,Data=host }); ClientPackage.Export(filename,Crypto.Seal(p.Data,pass)); return new Packet { Ok=true,Status="通用客户端 ZIP 已保存；同一份包可安装多台，名称自动采用计算机名称" }; });
                 }
                 pass=null;
             }
@@ -131,12 +132,12 @@ namespace Ycsz {
         void Uninstall() { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName=Path.Combine(Store.Bin,"Uninstall.exe"),Verb="runas",UseShellExecute=true }); Close(); } catch(Exception e) { MessageBox.Show(e.Message); } }
     }
     public sealed class EnrollmentForm : Form {
-        readonly TextBox name=Theme.Box(),host=Theme.Box(),password=Theme.Box(true),confirm=Theme.Box(true);
-        public string ClientName { get { return name.Text.Trim(); } } public string HostAddress { get { return host.Text.Trim(); } } public string ExportPassword { get { return password.Text; } }
+        readonly TextBox host=Theme.Box(),password=Theme.Box(true),confirm=Theme.Box(true);
+        public string HostAddress { get { return host.Text.Trim(); } } public string ExportPassword { get { return password.Text; } }
         public EnrollmentForm() {
-            Theme.Style(this,"注册客户端",550,360); var fields=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=2,Padding=new Padding(16) };
-            Theme.Row(fields,"设备名称",name); Theme.Row(fields,"管理端固定 IPv4",host); Theme.Row(fields,"注册包密码（≥12 字符）",password); Theme.Row(fields,"再次输入注册包密码",confirm);
-            var button=Theme.Button("创建加密注册包",(s,e)=> { try { Crypto.ValidatePassword(password.Text); if(password.Text!=confirm.Text) throw new ArgumentException("两次密码不一致"); IPAddress ip; if(!IPAddress.TryParse(host.Text,out ip)) throw new ArgumentException("IP 地址无效"); if(String.IsNullOrWhiteSpace(name.Text) || name.Text.Length>64) throw new ArgumentException("名称无效"); DialogResult=DialogResult.OK; } catch(Exception ex) { MessageBox.Show(ex.Message); } }); Theme.Row(fields,"",button); Controls.Add(fields);
+            Theme.Style(this,"生成通用客户端包",550,360); var fields=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=2,Padding=new Padding(16) };
+            Theme.Row(fields,"客户端名称",new Label { Text="自动采用各自的计算机名称",AutoSize=true }); Theme.Row(fields,"管理端固定 IPv4",host); Theme.Row(fields,"注册包密码（≥12 字符）",password); Theme.Row(fields,"再次输入注册包密码",confirm);
+            var button=Theme.Button("生成通用客户端 ZIP",(s,e)=> { try { Crypto.ValidatePassword(password.Text); if(password.Text!=confirm.Text) throw new ArgumentException("两次密码不一致"); IPAddress ip; if(!IPAddress.TryParse(host.Text,out ip)) throw new ArgumentException("IP 地址无效"); DialogResult=DialogResult.OK; } catch(Exception ex) { MessageBox.Show(ex.Message); } }); Theme.Row(fields,"",button); Controls.Add(fields);
         }
     }
     public sealed class NetworkEditor : Form {
@@ -177,16 +178,17 @@ namespace Ycsz {
         readonly ComboBox role=new ComboBox { DropDownStyle=ComboBoxStyle.DropDownList,Width=300 };
         readonly TextBox password=Theme.Box(true),confirm=Theme.Box(true),package=Theme.Box(),packagePassword=Theme.Box(true);
         readonly Label message=new Label { AutoSize=true,MaximumSize=new Size(520,0) };
-        public SetupForm() {
+        public SetupForm(bool clientOnly=false) {
             Theme.Style(this,"YCSZ 初始化",670,480); FormBorderStyle=FormBorderStyle.FixedDialog; MaximizeBox=false;
             Controls.Add(Theme.Header("首次安装初始化","密码不会明文保存；安装后在管理端注册客户端"));
             var fields=new TableLayoutPanel { Dock=DockStyle.Bottom,Height=330,ColumnCount=2,Padding=new Padding(20) };
-            role.Items.AddRange(new object[]{"管理端","客户端"}); role.SelectedIndex=0;
+            role.Items.AddRange(new object[]{"管理端","客户端"}); role.SelectedIndex=clientOnly?1:0; role.Enabled=!clientOnly;
             Theme.Row(fields,"安装角色",role); Theme.Row(fields,"本机管理密码（≥12 字符）",password); Theme.Row(fields,"再次输入密码",confirm);
             package.ReadOnly=true; var file=new FlowLayoutPanel { AutoSize=true }; file.Controls.Add(package); file.Controls.Add(Theme.Button("选择…",(s,e)=> { using(var open=new OpenFileDialog { Filter="注册包|*.ycsz" }) if(open.ShowDialog()==DialogResult.OK) package.Text=open.FileName; }));
             Theme.Row(fields,"客户端注册包",file); Theme.Row(fields,"注册包密码",packagePassword);
             var button=Theme.Button("完成初始化",async(s,e)=>await Initialize()); Theme.Row(fields,"",button); Theme.Row(fields,"",message); Controls.Add(fields);
-            role.SelectedIndexChanged+=(s,e)=> { file.Enabled=packagePassword.Enabled=role.SelectedIndex==1; }; file.Enabled=packagePassword.Enabled=false;
+            role.SelectedIndexChanged+=(s,e)=> { file.Enabled=packagePassword.Enabled=role.SelectedIndex==1; }; file.Enabled=packagePassword.Enabled=clientOnly;
+            if(clientOnly && File.Exists(Path.Combine(Store.Bin,"client.ycsz"))) package.Text=Path.Combine(Store.Bin,"client.ycsz");
         }
         async Task Initialize() {
             Enabled=false;
@@ -204,8 +206,18 @@ namespace Ycsz {
                     } else {
                         if(!File.Exists(filename) || new FileInfo(filename).Length>Wire.MaxFrame) throw new InvalidDataException("请选择有效注册包");
                         var e=Json.Decode<Enrollment>(Crypto.Open(File.ReadAllBytes(filename),packageSecret));
-                        IPAddress ip; Guid id;
-                        if(e==null || !Guid.TryParse(e.ClientId,out id) || !IPAddress.TryParse(e.Host,out ip) || ip.AddressFamily!=System.Net.Sockets.AddressFamily.InterNetwork || e.Port<1024 || e.Port>65535 || e.CertificateHash==null || !System.Text.RegularExpressions.Regex.IsMatch(e.CertificateHash,"^[0-9a-f]{64}$") || Convert.FromBase64String(e.Token).Length!=32) throw new InvalidDataException("注册包参数无效");
+                        EnrollmentRegistry.Validate(e);
+                        if(e.Universal) {
+                            var bundle=e;
+                            e=Store.Exists("pending-enrollment.bin")?Store.Load<Enrollment>("pending-enrollment.bin"):null;
+                            if(!EnrollmentRegistry.SameBundle(e,bundle)) e=EnrollmentRegistry.NewIdentity(bundle,Environment.MachineName);
+                            EnrollmentRegistry.Validate(e); e.Name=EnrollmentRegistry.ComputerName(Environment.MachineName);
+                            // Persist the identity before contacting the server so lost responses are retryable.
+                            Store.Save("pending-enrollment.bin",e);
+                            var registered=Wire.Heartbeat(bundle,new Packet { Op="register",Id=e.ClientId,Token=bundle.Token,BundleId=bundle.BundleId,Name=e.Name,Data=e.Token });
+                            if(!registered.Ok) throw new InvalidOperationException(registered.Error??"管理端拒绝注册");
+                        }
+                        e.Name=EnrollmentRegistry.ComputerName(Environment.MachineName);
                         settings.Enrollment=e;
                         // Verify server identity and credential BEFORE applying any firewall policy.
                         var baseline=PowerShell.Capture(); var response=Wire.Heartbeat(e,new Packet { Op="heartbeat",Events=new List<SecurityEvent>(),Network=baseline,Status="安装初始化验证" });
@@ -214,6 +226,7 @@ namespace Ycsz {
                         Store.Save("client.bin",new ClientDisk { Baseline=baseline,Policy=response.Policy }); Store.Save("installation-baseline.bin",baseline);
                     }
                     Store.Save("settings.bin",settings);
+                    try { File.Delete(Store.PathFor("pending-enrollment.bin")); } catch(IOException ex) { Store.Log("Pending enrollment cleanup: "+ex.GetType().Name); }
                 });
                 password.Clear(); confirm.Clear(); packagePassword.Clear(); secret=null; packageSecret=null; DialogResult=DialogResult.OK;
             } catch(Exception e) { message.Text=e.Message; } finally { Enabled=true; }

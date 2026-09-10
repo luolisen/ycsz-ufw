@@ -14,7 +14,7 @@ namespace Ycsz {
         public static T Copy<T>(T value) { return Decode<T>(Encode(value)); }
     }
     public sealed class PasswordRecord { public string Salt; public string Hash; public int Iterations; }
-    public sealed class Enrollment { public string ClientId; public string Name; public string Host; public int Port = 17443; public string CertificateHash; public string Token; }
+    public sealed class Enrollment { public bool Universal; public string BundleId; public string ClientId; public string Name; public string Host; public int Port = 17443; public string CertificateHash; public string Token; }
     public sealed class Settings {
         public string Role; public PasswordRecord Password; public Enrollment Enrollment;
         public string PfxPassword; public int Port = 17443; public string CertificateHash;
@@ -60,16 +60,17 @@ namespace Ycsz {
         public string Kind; public string Detail; public bool Success;
     }
     public sealed class ClientState {
-        public string Id; public string Name; public string Token; public Policy Policy = new Policy();
+        public string Id; public string Name; public string Token; public string BundleId; public Policy Policy = new Policy();
         public string LastSeen; public string Status; public NetworkSnapshot Network;
         public long AppliedRevision; public long AppliedNetworkRevision; public bool Revoked;
         public List<SecurityEvent> Events = new List<SecurityEvent>();
     }
-    public sealed class ManagerState { public List<string> Allow = Defaults.Domains.ToList(); public List<ClientState> Clients = new List<ClientState>(); }
+    public sealed class EnrollmentBundle { public string Id; public string Token; }
+    public sealed class ManagerState { public List<EnrollmentBundle> Bundles = new List<EnrollmentBundle>(); public List<string> Allow = Defaults.Domains.ToList(); public List<ClientState> Clients = new List<ClientState>(); }
     public sealed class ClientDisk { public Policy Policy = new Policy(); public NetworkSnapshot Baseline; public long AppliedNetworkRevision; public long AppliedRevision; public List<SecurityEvent> Events = new List<SecurityEvent>(); public long AttemptedNetworkRevision; public bool CleanStop = true; public long DroppedEvents; public List<SecurityEvent> History = new List<SecurityEvent>(); }
     public sealed class Packet {
         public string Op; public string Password; public string Id; public string Token; public string Name;
-        public string Data; public string Error; public string Status; public bool Ok; public bool Thawed;
+        public string BundleId; public string Data; public string Error; public string Status; public bool Ok; public bool Thawed;
         public long Revision; public long NetworkRevision; public NetworkSnapshot Network;
         public List<SecurityEvent> Events; public Policy Policy;
     }

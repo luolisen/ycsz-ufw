@@ -13,7 +13,7 @@ namespace Ycsz {
             Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
             try {
                 if(args.Length>0 && args[0]=="--installed-role") { RequireAdmin(); string role=Store.Load<Settings>("settings.bin").Role; return role=="manager"?10:role=="client"?20:1; }
-                if(args.Length>0 && args[0]=="--setup") { RequireAdmin(); using(var setup=new SetupForm()) return setup.ShowDialog()==DialogResult.OK?0:1; }
+                if(args.Length>0 && (args[0]=="--setup" || args[0]=="--setup-client")) { RequireAdmin(); using(var setup=new SetupForm(args[0]=="--setup-client")) return setup.ShowDialog()==DialogResult.OK?0:1; }
                 if(args.Length>0 && args[0]=="--close-ui") { RequireAdmin(); foreach(var process in Process.GetProcessesByName("Ycsz")) using(process) { if(process.Id==Process.GetCurrentProcess().Id) continue; try { if(String.Equals(process.MainModule.FileName,Path.Combine(Store.Bin,"Ycsz.exe"),StringComparison.OrdinalIgnoreCase)) process.Kill(); } catch(InvalidOperationException) {} } return 0; }
                 if(args.Length>0 && args[0]=="--recover") { RequireAdmin(); Recovery(); MessageBox.Show("本产品的出口规则已移除，审计设置已恢复。服务保持停止。","管理员恢复"); return 0; }
                 if(args.Length>0 && args[0]=="--uninstall-authorize") {

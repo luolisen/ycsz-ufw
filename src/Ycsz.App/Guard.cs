@@ -124,7 +124,7 @@ namespace Ycsz {
         public Packet Command(Packet p) {
             lock(sync) {
                 if(p.Op=="status") return new Packet { Ok=true,Status=CurrentStatus() };
-                if(p.Op=="details") return new Packet { Ok=true,Data=Json.Encode(new ClientState { Id=settings.Enrollment.ClientId,Name=settings.Enrollment.Name,Status=CurrentStatus(),Network=disk.Baseline,Policy=disk.Policy,AppliedRevision=disk.AppliedRevision,AppliedNetworkRevision=disk.AppliedNetworkRevision,Events=disk.History.ToList() }) };
+                if(p.Op=="details") return new Packet { Ok=true,Data=Json.Encode(new ClientState { Id=settings.Enrollment.ClientId,Name=Environment.MachineName,Status=CurrentStatus(),Network=disk.Baseline,Policy=disk.Policy,AppliedRevision=disk.AppliedRevision,AppliedNetworkRevision=disk.AppliedNetworkRevision,Events=disk.History.ToList() }) };
                 if(p.Op=="set-network") { if(p.Network==null) throw new ArgumentException("缺少基线"); p.Network.Validate(); if(requested.Count>0) throw new InvalidOperationException("上一次配置正在等待应用"); requested.Enqueue(Json.Copy(p.Network)); wake.Set(); return new Packet { Ok=true,Status="已排队，应用结果见事件" }; }
                 if(p.Op=="accept-baseline") { if(requested.Count>0) throw new InvalidOperationException("存在待执行配置"); disk.Baseline=PowerShell.Capture(); Persist(); Report("baseline_accepted","本地管理员接纳当前网络状态",true); return new Packet { Ok=true }; }
                 throw new ArgumentException("未知客户端操作");
