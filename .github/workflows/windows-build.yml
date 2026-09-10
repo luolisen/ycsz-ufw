@@ -19,6 +19,9 @@ jobs:
       - name: Parse Windows PowerShell scripts
         shell: powershell
         run: ./scripts/Test-Windows.ps1 -Mode Static | Tee-Object artifacts/powershell-results-windows.txt
+      - name: Runtime prerequisite state transitions
+        shell: powershell
+        run: ./scripts/Test-Net48.ps1 | Tee-Object artifacts/net48-results-windows.txt
       - name: Disposable Windows security integration
         shell: powershell
         run: ./scripts/Test-Security.ps1 | Tee-Object artifacts/security-results-windows.txt

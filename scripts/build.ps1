@@ -29,6 +29,11 @@ if (!(Test-Path artifacts\app\Ycsz.exe)) {
     throw 'Application binary missing after tests; inspect host protection logs.'
 }
 if (!$SkipInstaller) {
+    python scripts/fetch-net48.py
+    if ($LASTEXITCODE) { throw 'Offline runtime download/hash validation failed' }
+    $signature = Get-AuthenticodeSignature artifacts\redist\NDP48-x86-x64-AllOS-ENU.exe
+    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw 'Microsoft runtime signature validation failed' }
+    Write-Output 'PASS Microsoft offline runtime Authenticode signature'
     $nsis = (Get-Command makensis.exe -ErrorAction SilentlyContinue).Source
     if (!$nsis) { $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe" }
     if (!(Test-Path $nsis)) { throw 'Install NSIS 3 using its official installer or choco install nsis.' }
@@ -36,5 +41,5 @@ if (!$SkipInstaller) {
     if ($LASTEXITCODE) { throw 'Client installer build failed' }
     & $nsis /INPUTCHARSET UTF8 /V3 installer\Ycsz.nsi | Tee-Object artifacts\installer-build-windows.txt
     if ($LASTEXITCODE) { throw 'Installer build failed' }
-    Get-FileHash artifacts\Ycsz-Setup-0.2.0-x64.exe,artifacts\app\Ycsz.exe,artifacts\app\Ycsz.Core.dll -Algorithm SHA256 | Format-Table -AutoSize | Out-String | Set-Content artifacts\SHA256SUMS-WINDOWS.txt
+    Get-FileHash artifacts\Ycsz-Setup-1.0.0-x64.exe,artifacts\app\Ycsz.exe,artifacts\app\Ycsz.Core.dll -Algorithm SHA256 | Format-Table -AutoSize | Out-String | Set-Content artifacts\SHA256SUMS-WINDOWS.txt
 }

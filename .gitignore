@@ -13,3 +13,4 @@ artifacts/*.mdb
 .DS_Store
 .codex/
 *.tmp
+artifacts/redist/

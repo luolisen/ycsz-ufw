@@ -4,7 +4,7 @@ Unicode true
 !include "WinVer.nsh"
 Name "YCSZ 教育机房防火墙"
 !ifndef OUTPUT_FILE
-!define OUTPUT_FILE "..\artifacts\Ycsz-Setup-0.2.0-x64.exe"
+!define OUTPUT_FILE "..\artifacts\Ycsz-Setup-1.0.0-x64.exe"
 !endif
 OutFile "${OUTPUT_FILE}"
 InstallDir "$PROGRAMFILES64\YcszFirewall"
@@ -12,10 +12,10 @@ RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
-VIProductVersion "0.2.0.0"
+VIProductVersion "1.0.0.0"
 VIAddVersionKey /LANG=2052 "ProductName" "YCSZ 教育机房防火墙"
 VIAddVersionKey /LANG=2052 "FileDescription" "YCSZ 原生 Windows 客户端与管理端安装程序"
-VIAddVersionKey /LANG=2052 "FileVersion" "0.2.0"
+VIAddVersionKey /LANG=2052 "FileVersion" "1.0.0"
 VIAddVersionKey /LANG=2052 "LegalCopyright" "YCSZ contributors"
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME
@@ -34,17 +34,40 @@ Function .onInit
     Abort
   ${EndIf}
   SetRegView 64
-  ReadRegDWORD $0 HKLM "SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" "Release"
-  ${If} $0 < 528040
-    MessageBox MB_ICONSTOP "请先安装 Microsoft .NET Framework 4.8，再运行安装程序。"
-    Abort
-  ${EndIf}
   ReadRegStr $0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "InstallLocation"
   ${If} $0 != ""
     MessageBox MB_ICONSTOP "已安装本产品。请先通过管理页卸载，防止覆盖原网络基线。"
     Abort
   ${EndIf}
 FunctionEnd
+!macro Net48ReadRelease
+  StrCpy $0 0
+  ClearErrors
+  ReadRegDWORD $0 HKLM "SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" "Release"
+!macroend
+!macro Net48RunInstaller
+  DetailPrint "正在安装内置的 .NET Framework 4.8，请稍候。"
+  InitPluginsDir
+  SetOutPath "$PLUGINSDIR"
+  File /oname=net48-offline.exe "..\artifacts\redist\NDP48-x86-x64-AllOS-ENU.exe"
+  ClearErrors
+  ExecWait '"$PLUGINSDIR\net48-offline.exe" /passive /norestart /ChainingPackage YcszFirewall' $0
+  ${If} ${Errors}
+    StrCpy $0 1603
+  ${EndIf}
+  Delete "$PLUGINSDIR\net48-offline.exe"
+!macroend
+!macro Net48StopReboot
+  MessageBox MB_ICONINFORMATION ".NET Framework 安装要求重启。请保存工作并重启 Windows，再重新运行本安装包。YCSZ 尚未安装。" /SD IDOK
+  SetErrorLevel 3010
+  Quit
+!macroend
+!macro Net48StopFailure
+  MessageBox MB_ICONSTOP ".NET Framework 4.8 安装未完成（错误码 $0）。YCSZ 尚未安装，请解决运行库安装问题后重试。" /SD IDOK
+  SetErrorLevel $0
+  Quit
+!macroend
+!include "Net48.nsh"
 ; Repair only known payload paths left by an interrupted installation. The root
 ; is secured first; resetting a child then inherits that restricted root ACL.
 !macro RepairPayloadAcl PATH
@@ -58,6 +81,7 @@ FunctionEnd
   ${EndIf}
 !macroend
 Section "YCSZ" SEC_MAIN
+  Call EnsureNet48
   SetRegView 64
   SetShellVarContext all
   StrCpy $INSTDIR "$PROGRAMFILES64\YcszFirewall"
@@ -118,7 +142,7 @@ Section "YCSZ" SEC_MAIN
   ${EndIf}
   Delete "$INSTDIR\client.ycsz"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "DisplayName" "YCSZ 教育机房防火墙"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "DisplayVersion" "0.2.0"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "DisplayVersion" "1.0.0"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "Publisher" "YCSZ"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "UninstallString" '"$INSTDIR\Uninstall.exe"'

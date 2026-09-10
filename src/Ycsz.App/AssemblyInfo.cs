@@ -3,5 +3,5 @@ using System.Reflection;
 [assembly: AssemblyDescription("Native Windows education lab firewall client and manager")]
 [assembly: AssemblyCompany("YCSZ")]
 [assembly: AssemblyProduct("YCSZ Education Firewall")]
-[assembly: AssemblyVersion("0.2.0.0")]
-[assembly: AssemblyFileVersion("0.2.0.0")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
