@@ -1,0 +1,26 @@
+MakeNSIS v3.10 - Copyright 1999-2023 Contributors
+See the file COPYING for license details.
+Credits can be found in the Users Manual.
+
+Command line defined: "CLIENT_ONLY"
+Command line defined: "OUTPUT_FILE=..\artifacts\Ycsz-Client-Setup.exe"
+Processing config: C:\Program Files (x86)\NSIS\nsisconf.nsh
+Processing script file: "installer\Ycsz.nsi" (UTF8)
+
+Processed 1 file, writing output (x86-unicode):
+
+Output: "D:\a\ycsz-ufw\ycsz-ufw\artifacts\Ycsz-Client-Setup.exe"
+Install: 3 pages (192 bytes), 1 section (2072 bytes), 678 instructions (18984 bytes), 271 strings (10346 bytes), 1 language table (278 bytes).
+Uninstall: 2 pages (192 bytes), 1 section (2072 bytes), 108 instructions (3024 bytes), 127 strings (3300 bytes), 1 language table (254 bytes).
+Datablock optimizer saved 26498 bytes (~0.0%).
+
+Using lzma (compress whole) compression.
+
+EXE header size:               51712 / 38912 bytes
+Install code:                          (32336 bytes)
+Install data:                          (121583375 bytes)
+Uninstall code+data:                   (30378 bytes)
+Compressed data:           122959258 / 121646089 bytes
+CRC (0x189B5F66):                  4 / 4 bytes
+
+Total size:                123010974 / 121685005 bytes (101.0%)

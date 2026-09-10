@@ -1,8 +1,10 @@
-Version: v0.2.0 engineering preview
-Windows build/test source commit: ab73edea7d0f6d8613b15cfc735d2014cb4ea565
-Windows workflow: https://github.com/luolisen/ycsz-ufw/actions/runs/34515610735
-Published EXE files are copied unchanged from the successful Windows workflow artifact.
-Text result files were converted from UTF-16 to UTF-8 with trailing whitespace removed.
-Local installer-build.txt and client-installer-build.txt describe the separate Mono/NSIS validation build, not the released Windows-built EXE hashes.
-Full and client NSIS payloads verified; only text line-ending differences are normalized.
-Recovery document retained unchanged in repository, delivery ZIP and Release attachment.
+Version: v1.0.0
+Windows build/test source: ef5aa22 (codex/bundle-net48)
+Windows CI: https://github.com/luolisen/ycsz-ufw/actions/runs/34520982369
+Published installers are unchanged native Windows CI artifacts.
+Microsoft .NET Framework 4.8 offline runtime is embedded in the bundled manager and client installers; NoRuntime variants do not include it.
+Runtime SHA256: 0a3a390c47e639d0f7fc65b21195fee6b7f65b066f80f70c60fab191d14b7e40
+Windows build verified Microsoft Authenticode signature.
+Local installer-build.txt and client-installer-build.txt describe a separate Mono build, not the published installer bytes.
+Windows text logs are normalized to UTF-8 and trailing whitespace removed.
+Remote management installation evidence is recorded separately; no missing-runtime Windows VM installation is claimed.

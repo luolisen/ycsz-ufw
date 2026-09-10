@@ -3,48 +3,49 @@
  64-bit arm_v:8.5-A locale=C.UTF-8 Threads:10 OPEN_MAX:1048575, ASM
 
 Scanning the drive for archives:
-1 file, 277900 bytes (272 KiB)
+1 file, 247833119 bytes (237 MiB)
 
-Testing archive: /Users/alan/.codex/worktrees/0235/ycsz-ufw/artifacts/Ycsz-Setup-0.2.0-x64.exe
+Testing archive: /Users/alan/Desktop/ycsz-ufw/artifacts/Ycsz-Setup-1.0.0-x64.exe
 --
-Path = /Users/alan/.codex/worktrees/0235/ycsz-ufw/artifacts/Ycsz-Setup-0.2.0-x64.exe
+Path = /Users/alan/Desktop/ycsz-ufw/artifacts/Ycsz-Setup-1.0.0-x64.exe
 Type = Nsis
-Physical Size = 277900
+Physical Size = 247833119
 Method = LZMA:23
 Solid = +
-Headers Size = 30246
+Headers Size = 32220
 Embedded Stub Size = 51712
 SubType = NSIS-3 Unicode
 
 Everything is Ok
 
-Files: 15
-Size:       379942
-Compressed: 277900
+Files: 17
+Size:       244747701
+Compressed: 247833119
 
 7-Zip (z) 26.03 (arm64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-09-03
  64-bit arm_v:8.5-A locale=C.UTF-8 Threads:10 OPEN_MAX:1048575, ASM
 
 Scanning the drive for archives:
-1 file, 277900 bytes (272 KiB)
+1 file, 247833119 bytes (237 MiB)
 
-Extracting archive: /Users/alan/.codex/worktrees/0235/ycsz-ufw/artifacts/Ycsz-Setup-0.2.0-x64.exe
+Extracting archive: /Users/alan/Desktop/ycsz-ufw/artifacts/Ycsz-Setup-1.0.0-x64.exe
 --
-Path = /Users/alan/.codex/worktrees/0235/ycsz-ufw/artifacts/Ycsz-Setup-0.2.0-x64.exe
+Path = /Users/alan/Desktop/ycsz-ufw/artifacts/Ycsz-Setup-1.0.0-x64.exe
 Type = Nsis
-Physical Size = 277900
+Physical Size = 247833119
 Method = LZMA:23
 Solid = +
-Headers Size = 30246
+Headers Size = 32220
 Embedded Stub Size = 51712
 SubType = NSIS-3 Unicode
 
 Everything is Ok
 
-Files: 15
-Size:       437128
-Compressed: 277900
+Files: 17
+Size:       244804905
+Compressed: 247833119
 PASS payload matches build: Ycsz-Client-Setup.exe
+PASS payload matches build: Ycsz-Client-Setup-NoRuntime.exe
 PASS payload matches build: Ycsz.exe
 PASS payload matches build: Ycsz.Core.dll
 PASS payload matches build: Ycsz.exe.config
@@ -59,45 +60,137 @@ PASS payload matches build: docs/SECURITY-VALIDATION.md
  64-bit arm_v:8.5-A locale=C.UTF-8 Threads:10 OPEN_MAX:1048575, ASM
 
 Scanning the drive for archives:
-1 file, 150724 bytes (148 KiB)
+1 file, 123010974 bytes (118 MiB)
 
-Testing archive: /Users/alan/.codex/worktrees/0235/ycsz-ufw/artifacts/Ycsz-Client-Setup.exe
+Testing archive: /Users/alan/Desktop/ycsz-ufw/artifacts/Ycsz-Client-Setup.exe
 --
-Path = /Users/alan/.codex/worktrees/0235/ycsz-ufw/artifacts/Ycsz-Client-Setup.exe
+Path = /Users/alan/Desktop/ycsz-ufw/artifacts/Ycsz-Client-Setup.exe
 Type = Nsis
-Physical Size = 150724
+Physical Size = 123010974
 Method = LZMA:23
 Solid = +
-Headers Size = 30362
+Headers Size = 32308
 Embedded Stub Size = 51712
 SubType = NSIS-3 Unicode
 
 Everything is Ok
 
-Files: 14
-Size:       229218
-Compressed: 150724
+Files: 15
+Size:       121583319
+Compressed: 123010974
 
 7-Zip (z) 26.03 (arm64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-09-03
  64-bit arm_v:8.5-A locale=C.UTF-8 Threads:10 OPEN_MAX:1048575, ASM
 
 Scanning the drive for archives:
-1 file, 150724 bytes (148 KiB)
+1 file, 123010974 bytes (118 MiB)
 
-Extracting archive: /Users/alan/.codex/worktrees/0235/ycsz-ufw/artifacts/Ycsz-Client-Setup.exe
+Extracting archive: /Users/alan/Desktop/ycsz-ufw/artifacts/Ycsz-Client-Setup.exe
 --
-Path = /Users/alan/.codex/worktrees/0235/ycsz-ufw/artifacts/Ycsz-Client-Setup.exe
+Path = /Users/alan/Desktop/ycsz-ufw/artifacts/Ycsz-Client-Setup.exe
 Type = Nsis
-Physical Size = 150724
+Physical Size = 123010974
 Method = LZMA:23
 Solid = +
-Headers Size = 30362
+Headers Size = 32308
+Embedded Stub Size = 51712
+SubType = NSIS-3 Unicode
+
+Everything is Ok
+
+Files: 15
+Size:       121640531
+Compressed: 123010974
+
+7-Zip (z) 26.03 (arm64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-09-03
+ 64-bit arm_v:8.5-A locale=C.UTF-8 Threads:10 OPEN_MAX:1048575, ASM
+
+Scanning the drive for archives:
+1 file, 283310 bytes (277 KiB)
+
+Testing archive: /Users/alan/Desktop/ycsz-ufw/artifacts/Ycsz-Setup-1.0.0-NoRuntime-x64.exe
+--
+Path = /Users/alan/Desktop/ycsz-ufw/artifacts/Ycsz-Setup-1.0.0-NoRuntime-x64.exe
+Type = Nsis
+Physical Size = 283310
+Method = LZMA:23
+Solid = +
+Headers Size = 31828
+Embedded Stub Size = 51712
+SubType = NSIS-3 Unicode
+
+Everything is Ok
+
+Files: 15
+Size:       390159
+Compressed: 283310
+
+7-Zip (z) 26.03 (arm64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-09-03
+ 64-bit arm_v:8.5-A locale=C.UTF-8 Threads:10 OPEN_MAX:1048575, ASM
+
+Scanning the drive for archives:
+1 file, 283310 bytes (277 KiB)
+
+Extracting archive: /Users/alan/Desktop/ycsz-ufw/artifacts/Ycsz-Setup-1.0.0-NoRuntime-x64.exe
+--
+Path = /Users/alan/Desktop/ycsz-ufw/artifacts/Ycsz-Setup-1.0.0-NoRuntime-x64.exe
+Type = Nsis
+Physical Size = 283310
+Method = LZMA:23
+Solid = +
+Headers Size = 31828
+Embedded Stub Size = 51712
+SubType = NSIS-3 Unicode
+
+Everything is Ok
+
+Files: 15
+Size:       447363
+Compressed: 283310
+
+7-Zip (z) 26.03 (arm64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-09-03
+ 64-bit arm_v:8.5-A locale=C.UTF-8 Threads:10 OPEN_MAX:1048575, ASM
+
+Scanning the drive for archives:
+1 file, 153408 bytes (150 KiB)
+
+Testing archive: /Users/alan/Desktop/ycsz-ufw/artifacts/Ycsz-Client-Setup-NoRuntime.exe
+--
+Path = /Users/alan/Desktop/ycsz-ufw/artifacts/Ycsz-Client-Setup-NoRuntime.exe
+Type = Nsis
+Physical Size = 153408
+Method = LZMA:23
+Solid = +
+Headers Size = 31944
 Embedded Stub Size = 51712
 SubType = NSIS-3 Unicode
 
 Everything is Ok
 
 Files: 14
-Size:       286413
-Compressed: 150724
-RESULT both NSIS packages verified; 10 full-package and 4 client-runtime comparisons passed (text CRLF/LF normalized). Windows execution evidence is recorded separately.
+Size:       236751
+Compressed: 153408
+
+7-Zip (z) 26.03 (arm64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-09-03
+ 64-bit arm_v:8.5-A locale=C.UTF-8 Threads:10 OPEN_MAX:1048575, ASM
+
+Scanning the drive for archives:
+1 file, 153408 bytes (150 KiB)
+
+Extracting archive: /Users/alan/Desktop/ycsz-ufw/artifacts/Ycsz-Client-Setup-NoRuntime.exe
+--
+Path = /Users/alan/Desktop/ycsz-ufw/artifacts/Ycsz-Client-Setup-NoRuntime.exe
+Type = Nsis
+Physical Size = 153408
+Method = LZMA:23
+Solid = +
+Headers Size = 31944
+Embedded Stub Size = 51712
+SubType = NSIS-3 Unicode
+
+Everything is Ok
+
+Files: 14
+Size:       293963
+Compressed: 153408
+RESULT four NSIS packages verified; bundled and runtime-free payload comparisons passed (text CRLF/LF normalized). Windows execution evidence is recorded separately.

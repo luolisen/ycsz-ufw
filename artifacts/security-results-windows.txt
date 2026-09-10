@@ -27,11 +27,14 @@ PASS revoked device heartbeat rejected
 PASS revoked device cannot restore itself via universal bundle
 PASS universal ZIP contains installer and encrypted enrollment
 PASS export is reusable without device identity
+PASS runtime choice selects distinct installers
+PASS runtime-free export uses selected installer bytes
+PASS runtime-free export explains prerequisite
 PASS disabled bundle blocks new devices
 PASS disabling bundle preserves existing device heartbeat
 PASS client scanner terminates harmless proxy-name fixture and reports
 PASS client scanner leaves unrelated process running
-RESULT 29 Windows checks passed
+RESULT 32 Windows checks passed
 PASS SCM restarts terminated service with new PID
 PASS independent devices persisted across service crash
 PASS authenticated computer name persisted

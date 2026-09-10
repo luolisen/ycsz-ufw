@@ -1,0 +1,9 @@
+PASS .NET dependency gate: already-48
+PASS .NET dependency gate: newer-481
+PASS .NET dependency gate: missing-install-success
+PASS .NET dependency gate: older-install-success
+PASS .NET dependency gate: reboot-required
+PASS .NET dependency gate: reboot-initiated
+PASS .NET dependency gate: cancelled
+PASS .NET dependency gate: install-failed
+PASS .NET dependency gate: success-but-registry-missing

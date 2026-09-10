@@ -1,0 +1,26 @@
+MakeNSIS v3.10 - Copyright 1999-2023 Contributors
+See the file COPYING for license details.
+Credits can be found in the Users Manual.
+
+Command line defined: "WITHOUT_NET48"
+Command line defined: "OUTPUT_FILE=..\artifacts\Ycsz-Setup-1.0.0-NoRuntime-x64.exe"
+Processing config: C:\Program Files (x86)\NSIS\nsisconf.nsh
+Processing script file: "installer\Ycsz.nsi" (UTF8)
+
+Processed 1 file, writing output (x86-unicode):
+
+Output: "D:\a\ycsz-ufw\ycsz-ufw\artifacts\Ycsz-Setup-1.0.0-NoRuntime-x64.exe"
+Install: 3 pages (192 bytes), 1 section (2072 bytes), 671 instructions (18788 bytes), 265 strings (10062 bytes), 1 language table (278 bytes).
+Uninstall: 2 pages (192 bytes), 1 section (2072 bytes), 108 instructions (3024 bytes), 125 strings (3276 bytes), 1 language table (254 bytes).
+Datablock optimizer saved 26498 bytes (~5.4%).
+
+Using lzma (compress whole) compression.
+
+EXE header size:               51712 / 38912 bytes
+Install code:                          (31856 bytes)
+Install data:                          (390215 bytes)
+Uninstall code+data:                   (30354 bytes)
+Compressed data:              231594 / 452425 bytes
+CRC (0xDAEFB880):                  4 / 4 bytes
+
+Total size:                   283310 / 491341 bytes (57.6%)
