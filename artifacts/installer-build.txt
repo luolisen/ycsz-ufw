@@ -1,0 +1,23 @@
+MakeNSIS v3.12 - Copyright 1999-2026 Contributors
+See the file COPYING for license details.
+Credits can be found in the Users Manual.
+
+Processing script file: "installer/Ycsz.nsi" (UTF8)
+
+Processed 1 file, writing output (x86-unicode):
+
+Output: "/Users/alan/.codex/worktrees/0235/ycsz-ufw/artifacts/Ycsz-Setup-0.1.0-x64.exe"
+Install: 3 pages (192 bytes), 1 section (4120 bytes), 528 instructions (14784 bytes), 236 strings (7686 bytes), 1 language table (278 bytes).
+Uninstall: 2 pages (192 bytes), 1 section (4120 bytes), 110 instructions (3080 bytes), 123 strings (3126 bytes), 1 language table (254 bytes).
+Datablock optimizer saved 26498 bytes (~8.3%).
+
+Using lzma (compress whole) compression.
+
+EXE header size:               51712 / 38912 bytes
+Install code:                          (25476 bytes)
+Install data:                          (221568 bytes)
+Uninstall code+data:                   (30260 bytes)
+Compressed data:               94085 / 277304 bytes
+CRC (0xED789282):                  4 / 4 bytes
+
+Total size:                   145801 / 316220 bytes (46.1%)

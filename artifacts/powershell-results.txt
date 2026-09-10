@@ -1,0 +1,10 @@
+
+Test                        Result Detail
+----                        ------ ------
+Parse build.ps1             PASS   
+Parse System.ps1            PASS   
+Parse Test-NetworkLogic.ps1 PASS   
+Parse Test-Tls.ps1          PASS   
+Parse Test-Windows.ps1      PASS   
+
+Read-only checks complete. Network enforcement, GUI, TLS and rollback still require the manual VM test matrix.

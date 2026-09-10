@@ -1,0 +1,28 @@
+name: Windows build and portable tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install NSIS
+        shell: powershell
+        run: choco install nsis --no-progress -y
+      - name: Compile, test and package
+        shell: powershell
+        run: ./scripts/build.ps1
+      - name: Parse Windows PowerShell scripts
+        shell: powershell
+        run: ./scripts/Test-Windows.ps1 -Mode Static
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ycsz-windows-x64
+          path: |
+            artifacts/Ycsz-Setup-*.exe
+            artifacts/*results*.txt
+            artifacts/SHA256SUMS*

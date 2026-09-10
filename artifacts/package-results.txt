@@ -1,0 +1,56 @@
+
+7-Zip (z) 26.03 (arm64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-09-03
+ 64-bit arm_v:8.5-A locale=C.UTF-8 Threads:10 OPEN_MAX:1048575, ASM
+
+Scanning the drive for archives:
+1 file, 145925 bytes (143 KiB)
+
+Testing archive: /Users/alan/.codex/worktrees/0235/ycsz-ufw/artifacts/Ycsz-Setup-0.1.0-x64.exe
+--
+Path = /Users/alan/.codex/worktrees/0235/ycsz-ufw/artifacts/Ycsz-Setup-0.1.0-x64.exe
+Type = Nsis
+Physical Size = 145925
+Method = LZMA:23
+Solid = +
+Headers Size = 29328
+Embedded Stub Size = 51712
+SubType = NSIS-3 Unicode
+
+Everything is Ok
+
+Files: 14
+Size:       221516
+Compressed: 145925
+
+7-Zip (z) 26.03 (arm64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-09-03
+ 64-bit arm_v:8.5-A locale=C.UTF-8 Threads:10 OPEN_MAX:1048575, ASM
+
+Scanning the drive for archives:
+1 file, 145925 bytes (143 KiB)
+
+Extracting archive: /Users/alan/.codex/worktrees/0235/ycsz-ufw/artifacts/Ycsz-Setup-0.1.0-x64.exe
+--
+Path = /Users/alan/.codex/worktrees/0235/ycsz-ufw/artifacts/Ycsz-Setup-0.1.0-x64.exe
+Type = Nsis
+Physical Size = 145925
+Method = LZMA:23
+Solid = +
+Headers Size = 29328
+Embedded Stub Size = 51712
+SubType = NSIS-3 Unicode
+
+Everything is Ok
+
+Files: 14
+Size:       278698
+Compressed: 145925
+PASS payload matches build: Ycsz.exe
+PASS payload matches build: Ycsz.Core.dll
+PASS payload matches build: Ycsz.exe.config
+PASS payload matches build: System.ps1
+PASS payload matches build: README.md
+PASS payload matches build: TASK.md
+PASS payload matches build: PLAN.md
+PASS payload matches build: docs/ARCHITECTURE.md
+PASS payload matches build: docs/SECURITY-VALIDATION.md
+RESULT NSIS CRC/decompression and 9 payload comparisons passed; installer was NOT executed on Windows.

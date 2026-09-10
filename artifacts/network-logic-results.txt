@@ -1,0 +1,10 @@
+PASS capture detects deleted hosts
+PASS deleted hosts recreated without adapter writes
+PASS hosts-only drift does not rewrite DHCP or DNS
+PASS unchanged baseline makes no writes
+PASS absent initial hosts restored as absence
+PASS DHCP drift changes only IPv4 mode
+PASS DNS drift changes only IPv4 DNS
+PASS missing adapter still permits hosts recovery and reports error
+PASS new adapter alone is disabled
+RESULT 9/9 synthetic network tests passed; no Windows cmdlets executed

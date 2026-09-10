@@ -1,0 +1,11 @@
+artifacts/app/
+artifacts/*.exe
+artifacts/*.zip
+artifacts/*.pdb
+artifacts/*.mdb
+**/bin/
+**/obj/
+*.user
+*.suo
+*.pfx
+*.ycsz

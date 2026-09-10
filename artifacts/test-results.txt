@@ -1,0 +1,35 @@
+PASS all 20 requested executable names covered
+PASS password salt and verification
+PASS password length bounded
+PASS constant comparison length differences
+PASS enrollment authenticated encryption
+PASS envelope truncation rejected
+PASS allowlist normalizes and deduplicates
+PASS injection and broad CIDR rejected
+PASS wire frame round trip
+PASS wire oversized and negative rejected before allocation
+PASS wire truncated body rejected
+PASS network baseline round trip
+PASS hosts and bindings drift detected
+PASS missing and new adapters handled
+PASS network arbitrary binding and bad IP rejected
+PASS WFP GUID constants valid
+PASS WFP x64 ABI sizes
+PASS WFP critical x64 offsets
+PASS default IPv4 and IPv6 routes valid
+PASS route family mismatch rejected
+PASS IPv6 DNS and router discovery drift
+PASS automatic DNS lease changes ignored
+PASS binding and address order ignored
+PASS duplicate adapters rejected
+PASS empty hosts baseline valid
+PASS huge hosts rejected
+PASS bounded whitelist count
+PASS null certificate rejected
+PASS wire JSON null rejected
+PASS session login backoff
+PASS deleted empty hosts differs from existing empty hosts
+PASS absent hosts cannot carry contradictory content
+PASS failed network revision does not repeat after restart
+PASS applied and empty network commands are not repeated
+RESULT 34/34 passed; Windows integration NOT executed
