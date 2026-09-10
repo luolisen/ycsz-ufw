@@ -2,13 +2,15 @@
 
 原生 WinForms + Windows 服务；C# / .NET Framework 4.5 API 目标；Windows 10/11 x64、.NET Framework 4.8、Windows PowerShell 5.1。
 
-**0.1.0 是待 Windows 实机验收的工程预览版本。** 请先在可回滚虚拟机验证，不要把交叉编译成功理解为机房部署验收通过。
+**0.2.0 是通用客户端工程预览版本。** 请先在可回滚虚拟机验证，不要把交叉编译成功理解为机房部署验收通过。
+
+安装恢复实机记录见 [2026-09-11 安装恢复](docs/INSTALLER-RECOVERY-2026-09-11.md)，通用客户端和反破坏检查见 [专项验证](docs/UNIVERSAL-CLIENT-SECURITY.md)。
 
 详见 [任务规格](TASK.md)、[执行计划](PLAN.md) 和 [验证记录](docs/SECURITY-VALIDATION.md)。
 
 ## 构建
 
-macOS：安装 Mono、NSIS 后运行 `./scripts/build.sh`。输出 `artifacts/Ycsz-Setup-0.1.0-x64.exe`。
+macOS：安装 Mono、NSIS 后运行 `./scripts/build.sh`。输出 `artifacts/Ycsz-Setup-0.2.0-x64.exe`。
 
 Windows：运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1`；不需要 NuGet 依赖。
 
@@ -17,10 +19,14 @@ Windows：运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bu
 ## 安装顺序
 
 1. 在固定 IPv4 的管理端运行安装包，选择管理端，设置至少 12 字符的管理密码。安装需要 UAC。
-2. 打开开始菜单管理界面并验证密码，注册客户端：填写设备名、管理端固定 IPv4、注册包密码，导出加密 `.ycsz` 文件。
-3. 在客户端运行同一个安装包，选择客户端、设置本机管理密码、导入注册包。初始化时必须能够连接管理端 TCP 17443，验证证书及令牌后保存网络基线。
+2. 打开管理界面并验证密码，点击“生成通用客户端包”：填写管理端固定 IPv4 和注册包密码，导出 ZIP。内含 `Ycsz-Client-Setup.exe` 和加密 `client.ycsz`，同一 ZIP 可重复部署多台电脑。
+3. 在每台客户端解压全部文件，运行 `Ycsz-Client-Setup.exe`。角色自动锁定为客户端并选中同目录注册包；输入本机管理密码和注册包密码。每台安装独立生成 ID/凭据，并自动用 Windows 计算机名称显示；同名计算机也不会合并。初始化时必须能够连接管理端 TCP 17443，验证证书、完成注册后保存网络基线。
 4. 安装完成后重新登录以启动托盘，或手动运行 `Ycsz.exe --tray`。SHIFT + 左键点击托盘并输入密码进入管理。
 5. 管理端修改统一白名单、选定设备解冻/冻结，查看客户端实际应用版本及事件。网络与 hosts 页可修改所选客户端的配置基线。
+
+通用包必须连接 v0.2.0 或更新版管理端；旧单设备 `.ycsz` 仍可通过选择文件导入。不要克隆已初始化的 `ProgramData` 配置。通用包泄露时可“停用通用接入包”，已有客户端独立凭据仍有效；逐台撤销仍使用“撤销接入”。
+
+升级管理端前备份 `C:\ProgramData\YcszFirewall`。使用正常卸载入口保留该目录，升级需由管理员按文档处理，不支持直接覆盖安装；旧配置模型兼容新程序，但本版安装器仍拒绝覆盖已有配置。
 
 安装自动创建仅域/专用网络、本地子网的管理端入站规则。跨 VLAN 部署需要管理员另行配置正确的精确来源子网；不要直接开放公网。
 

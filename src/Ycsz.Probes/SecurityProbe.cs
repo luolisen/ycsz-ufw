@@ -19,6 +19,7 @@ static class SecurityProbe {
     static int Main(string[] args) {
         try {
             if(Environment.GetEnvironmentVariable("YCSZ_DISPOSABLE_TEST")!="1") throw new Exception("Requires explicitly enabled disposable Windows fixture");
+            if(args[0]=="--idle") { System.Threading.Thread.Sleep(30000); return 0; }
             if(args[0]=="--initialize") {
                 if(Directory.Exists(Store.Root)) throw new Exception("Refusing existing configuration");
                 Store.Initialize(); var s=new Settings { Role="manager",Password=Crypto.HashPassword(TestPassword),PfxPassword=Crypto.Token() };
@@ -27,7 +28,7 @@ static class SecurityProbe {
                 try { s.CertificateHash=Crypto.Sha256(cert.RawData); } finally { cert.Reset(); }
                 Store.Save("settings.bin",s); Store.Save("manager.bin",new ManagerState());
                 Check("isolated manager configuration initialized",true);
-            } else if(args[0]=="--checks") { StandardUser(); Registration(); }
+            } else if(args[0]=="--checks") { StandardUser(); Registration(); ProcessDetection(); }
             else if(args[0]=="--persistence") {
                 string token=Ipc.Call(new Packet { Op="login",Password=TestPassword }).Token;
                 var nodes=Json.Decode<System.Collections.Generic.List<ClientState>>(Call("list",token).Data);
@@ -61,6 +62,18 @@ static class SecurityProbe {
             Check("password-authorized standard user management works",Call("list",session).Ok);
             Call("logout",session); Rejected("logout invalidates management session",()=>Call("list",session));
         } } finally { CloseHandle(token); }
+    }
+    static void ProcessDetection() {
+        foreach(var name in new[]{"v2ray.exe","safe-fixture.exe"}) {
+            string path=Path.Combine(Store.Bin,name); File.Copy(Path.Combine(Store.Bin,"SecurityProbe.exe"),path,true);
+            using(var process=Process.Start(new ProcessStartInfo { FileName=path,Arguments="--idle",UseShellExecute=false,CreateNoWindow=true })) {
+                try {
+                    System.Threading.Thread.Sleep(300); bool reported=false;
+                    ProcessScanner.Inspect(process,(kind,detail,success)=> { reported=kind=="proxy_process" && success; });
+                    Check(name=="v2ray.exe"?"client scanner terminates harmless proxy-name fixture and reports":"client scanner leaves unrelated process running",name=="v2ray.exe"?process.HasExited&&reported:!process.HasExited&&!reported);
+                } finally { if(!process.HasExited) { process.Kill(); process.WaitForExit(5000); } }
+            }
+        }
     }
     static void Registration() {
         string session=Ipc.Call(new Packet { Op="login",Password=TestPassword }).Token;

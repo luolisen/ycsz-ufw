@@ -60,12 +60,7 @@ namespace Ycsz {
         void Try(string kind,Action action) { try { action(); } catch(Exception e) { Report(kind+"_error",e.Message,false); } }
         void ScanProcesses() {
             foreach(var p in Process.GetProcesses()) using(p) {
-                try {
-                    string filename=p.ProcessName+".exe",label;
-                    if(!Defaults.Processes.TryGetValue(filename,out label)) continue;
-                    int id=p.Id; try { p.Kill(); bool exited=p.WaitForExit(2000); Report("proxy_process",label+" "+filename+" PID="+id+(exited?" 已终止":" 终止等待超时"),exited); }
-                    catch(Exception e) { Report("proxy_process",filename+" PID="+id+" 终止失败："+e.Message,false); }
-                } catch(InvalidOperationException) { } catch(System.ComponentModel.Win32Exception) { }
+                ProcessScanner.Inspect(p,(kind,detail,success)=>Report(kind,detail,success));
             }
         }
         void CheckProxy() {

@@ -4,7 +4,7 @@ Unicode true
 !include "WinVer.nsh"
 Name "YCSZ 教育机房防火墙"
 !ifndef OUTPUT_FILE
-!define OUTPUT_FILE "../artifacts/Ycsz-Setup-0.2.0-x64.exe"
+!define OUTPUT_FILE "..\artifacts\Ycsz-Setup-0.2.0-x64.exe"
 !endif
 OutFile "${OUTPUT_FILE}"
 InstallDir "$PROGRAMFILES64\YcszFirewall"
@@ -82,23 +82,23 @@ Section "YCSZ" SEC_MAIN
   !insertmacro RepairPayloadAcl "docs"
   !insertmacro RepairPayloadAcl "Ycsz-Client-Setup.exe"
   !insertmacro RepairPayloadAcl "client.ycsz"
-  File "../artifacts/app/Ycsz.exe"
-  File "../artifacts/app/Ycsz.Core.dll"
-  File "../artifacts/app/Ycsz.exe.config"
-  File "../artifacts/app/System.ps1"
+  File "..\artifacts\app\Ycsz.exe"
+  File "..\artifacts\app\Ycsz.Core.dll"
+  File "..\artifacts\app\Ycsz.exe.config"
+  File "..\artifacts\app\System.ps1"
 !ifndef CLIENT_ONLY
-  File "../artifacts/Ycsz-Client-Setup.exe"
+  File "..\artifacts\Ycsz-Client-Setup.exe"
 !else
   ${If} ${FileExists} "$EXEDIR\client.ycsz"
     CopyFiles /SILENT "$EXEDIR\client.ycsz" "$INSTDIR\client.ycsz"
   ${EndIf}
 !endif
-  File "../README.md"
-  File "../TASK.md"
-  File "../PLAN.md"
+  File "..\README.md"
+  File "..\TASK.md"
+  File "..\PLAN.md"
   SetOutPath "$INSTDIR\docs"
-  File "../docs/SECURITY-VALIDATION.md"
-  File "../docs/ARCHITECTURE.md"
+  File "..\docs\SECURITY-VALIDATION.md"
+  File "..\docs\ARCHITECTURE.md"
   SetOutPath "$INSTDIR"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   nsExec::ExecToLog '"$SYSDIR\icacls.exe" "$INSTDIR" /setowner *S-1-5-32-544 /T'
