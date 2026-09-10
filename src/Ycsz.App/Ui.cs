@@ -120,10 +120,10 @@ namespace Ycsz {
         }
         async Task Enroll() {
             using(var dialog=new EnrollmentForm()) if(dialog.ShowDialog(this)==DialogResult.OK) {
-                var host=dialog.HostAddress; var pass=dialog.ExportPassword;
+                var host=dialog.HostAddress; var pass=dialog.ExportPassword; bool includeRuntime=dialog.IncludeRuntime;
                 using(var save=new SaveFileDialog { Filter="通用客户端安装包|*.zip",FileName="Ycsz-Client-"+DateTime.Now.ToString("yyyyMMdd-HHmmss")+".zip" }) if(save.ShowDialog(this)==DialogResult.OK) {
                     string filename=save.FileName;
-                    await Perform(()=> { ClientPackage.CheckInstaller(); var p=Ipc.Call(new Packet { Op="create-bundle",Token=token,Data=host }); ClientPackage.Export(filename,Crypto.Seal(p.Data,pass)); return new Packet { Ok=true,Status="通用客户端 ZIP 已保存；同一份包可安装多台，名称自动采用计算机名称" }; });
+                    await Perform(()=> { string installer=ClientPackage.ResolveInstaller(includeRuntime); var p=Ipc.Call(new Packet { Op="create-bundle",Token=token,Data=host }); ClientPackage.Export(filename,Crypto.Seal(p.Data,pass),installer,includeRuntime); return new Packet { Ok=true,Status="通用客户端 ZIP 已保存；同一份包可安装多台，名称自动采用计算机名称" }; });
                 }
                 pass=null;
             }
@@ -133,10 +133,13 @@ namespace Ycsz {
     }
     public sealed class EnrollmentForm : Form {
         readonly TextBox host=Theme.Box(),password=Theme.Box(true),confirm=Theme.Box(true);
+        readonly CheckBox runtime=new CheckBox { Text="内置 .NET Framework 4.8（体积较大）",Checked=true,AutoSize=true };
+        public bool IncludeRuntime { get { return runtime.Checked; } }
         public string HostAddress { get { return host.Text.Trim(); } } public string ExportPassword { get { return password.Text; } }
         public EnrollmentForm() {
-            Theme.Style(this,"生成通用客户端包",550,360); var fields=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=2,Padding=new Padding(16) };
+            Theme.Style(this,"生成通用客户端包",650,460); var fields=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=2,Padding=new Padding(16) };
             Theme.Row(fields,"客户端名称",new Label { Text="自动采用各自的计算机名称",AutoSize=true }); Theme.Row(fields,"管理端固定 IPv4",host); Theme.Row(fields,"注册包密码（≥12 字符）",password); Theme.Row(fields,"再次输入注册包密码",confirm);
+            Theme.Row(fields,"运行环境",runtime); Theme.Row(fields,"",new Label { Text="不内置版需客户端已有 .NET 4.8。管理端缺少内置版安装器时，需联网从本项目正式发布页获取并校验。",AutoSize=true,MaximumSize=new Size(430,0) });
             var button=Theme.Button("生成通用客户端 ZIP",(s,e)=> { try { Crypto.ValidatePassword(password.Text); if(password.Text!=confirm.Text) throw new ArgumentException("两次密码不一致"); IPAddress ip; if(!IPAddress.TryParse(host.Text,out ip)) throw new ArgumentException("IP 地址无效"); DialogResult=DialogResult.OK; } catch(Exception ex) { MessageBox.Show(ex.Message); } }); Theme.Row(fields,"",button); Controls.Add(fields);
         }
     }

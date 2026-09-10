@@ -20,6 +20,8 @@ if [[ -n "${YCSZ_PWSH:-}" ]]; then
   "$YCSZ_PWSH" -NoLogo -NoProfile -File scripts/Test-Windows.ps1 -Mode Static | tee artifacts/powershell-results.txt
 fi
 python3 scripts/fetch-net48.py
+makensis -INPUTCHARSET UTF8 -V3 -DWITHOUT_NET48 -DCLIENT_ONLY -DOUTPUT_FILE=../artifacts/Ycsz-Client-Setup-NoRuntime.exe installer/Ycsz.nsi | tee artifacts/client-noruntime-build.txt
+makensis -INPUTCHARSET UTF8 -V3 -DWITHOUT_NET48 -DOUTPUT_FILE=../artifacts/Ycsz-Setup-1.0.0-NoRuntime-x64.exe installer/Ycsz.nsi | tee artifacts/noruntime-build.txt
 makensis -INPUTCHARSET UTF8 -V3 -DCLIENT_ONLY -DOUTPUT_FILE=../artifacts/Ycsz-Client-Setup.exe installer/Ycsz.nsi | tee artifacts/client-installer-build.txt
 makensis -INPUTCHARSET UTF8 -V3 installer/Ycsz.nsi | tee artifacts/installer-build.txt
 shasum -a 256 artifacts/Ycsz-Setup-1.0.0-x64.exe artifacts/app/Ycsz.exe artifacts/app/Ycsz.Core.dll > artifacts/SHA256SUMS

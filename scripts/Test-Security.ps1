@@ -14,7 +14,7 @@ $madeService = $false
 function NativeCheck([string]$operation) { if ($LASTEXITCODE) { throw "$operation failed: $LASTEXITCODE" } }
 try {
     New-Item -ItemType Directory $fixture | Out-Null
-    Copy-Item "$repo\artifacts\app\Ycsz.exe","$repo\artifacts\app\Ycsz.Core.dll","$repo\artifacts\app\Ycsz.exe.config","$repo\artifacts\app\System.ps1","$repo\artifacts\app\SecurityProbe.exe","$repo\artifacts\Ycsz-Client-Setup.exe" $fixture
+    Copy-Item "$repo\artifacts\app\Ycsz.exe","$repo\artifacts\app\Ycsz.Core.dll","$repo\artifacts\app\Ycsz.exe.config","$repo\artifacts\app\System.ps1","$repo\artifacts\app\SecurityProbe.exe","$repo\artifacts\Ycsz-Client-Setup.exe","$repo\artifacts\Ycsz-Client-Setup-NoRuntime.exe" $fixture
     & icacls.exe $fixture /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' | Out-Null
     NativeCheck 'Fixture ACL'
     $env:YCSZ_DISPOSABLE_TEST = '1'

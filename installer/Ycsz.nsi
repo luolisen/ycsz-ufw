@@ -46,6 +46,12 @@ FunctionEnd
   ReadRegDWORD $0 HKLM "SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" "Release"
 !macroend
 !macro Net48RunInstaller
+!ifdef WITHOUT_NET48
+  StrCpy $0 1603
+  MessageBox MB_ICONSTOP "此安装包不内置运行库。请先安装 .NET Framework 4.8，或使用内置运行库版。" /SD IDOK
+  SetErrorLevel 1603
+  Quit
+!else
   DetailPrint "正在安装内置的 .NET Framework 4.8，请稍候。"
   InitPluginsDir
   SetOutPath "$PLUGINSDIR"
@@ -56,6 +62,7 @@ FunctionEnd
     StrCpy $0 1603
   ${EndIf}
   Delete "$PLUGINSDIR\net48-offline.exe"
+!endif
 !macroend
 !macro Net48StopReboot
   MessageBox MB_ICONINFORMATION ".NET Framework 安装要求重启。请保存工作并重启 Windows，再重新运行本安装包。YCSZ 尚未安装。" /SD IDOK
@@ -105,13 +112,17 @@ Section "YCSZ" SEC_MAIN
   !insertmacro RepairPayloadAcl "Uninstall.exe"
   !insertmacro RepairPayloadAcl "docs"
   !insertmacro RepairPayloadAcl "Ycsz-Client-Setup.exe"
+  !insertmacro RepairPayloadAcl "Ycsz-Client-Setup-NoRuntime.exe"
   !insertmacro RepairPayloadAcl "client.ycsz"
   File "..\artifacts\app\Ycsz.exe"
   File "..\artifacts\app\Ycsz.Core.dll"
   File "..\artifacts\app\Ycsz.exe.config"
   File "..\artifacts\app\System.ps1"
 !ifndef CLIENT_ONLY
+!ifndef WITHOUT_NET48
   File "..\artifacts\Ycsz-Client-Setup.exe"
+!endif
+  File "..\artifacts\Ycsz-Client-Setup-NoRuntime.exe"
 !else
   ${If} ${FileExists} "$EXEDIR\client.ycsz"
     CopyFiles /SILENT "$EXEDIR\client.ycsz" "$INSTDIR\client.ycsz"
@@ -234,6 +245,7 @@ Section "Uninstall"
   Delete "$INSTDIR\Ycsz.exe.config"
   Delete "$INSTDIR\System.ps1"
   Delete "$INSTDIR\Ycsz-Client-Setup.exe"
+  Delete "$INSTDIR\Ycsz-Client-Setup-NoRuntime.exe"
   Delete "$INSTDIR\client.ycsz"
   Delete "$INSTDIR\README.md"
   Delete "$INSTDIR\TASK.md"

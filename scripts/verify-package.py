@@ -21,6 +21,7 @@ def run(*args):
 run(sevenzip, 't', str(installer))
 expected = {
     'Ycsz-Client-Setup.exe': artifacts/'Ycsz-Client-Setup.exe',
+    'Ycsz-Client-Setup-NoRuntime.exe': artifacts/'Ycsz-Client-Setup-NoRuntime.exe',
     'Ycsz.exe': artifacts/'app/Ycsz.exe',
     'Ycsz.Core.dll': artifacts/'app/Ycsz.Core.dll',
     'Ycsz.exe.config': artifacts/'app/Ycsz.exe.config',
@@ -60,20 +61,33 @@ with tempfile.TemporaryDirectory(prefix='ycsz-client-package-') as folder:
             raise SystemExit('Client payload mismatch: '+name)
     if any((Path(folder)/name).exists() for name in ['SecurityProbe.exe','Ycsz.Tests.exe','TlsProbe.exe','Ycsz-Client-Setup.exe']):
         raise SystemExit('Unexpected nested installer/test fixture')
-logs.append('RESULT both NSIS packages verified; 10 full-package and 4 client-runtime comparisons passed (text CRLF/LF normalized). Windows execution evidence is recorded separately.\n')
+small_installers=[artifacts/'Ycsz-Setup-1.0.0-NoRuntime-x64.exe',artifacts/'Ycsz-Client-Setup-NoRuntime.exe']
+for small in small_installers:
+    run(sevenzip,'t',str(small))
+    with tempfile.TemporaryDirectory(prefix='ycsz-no-runtime-') as folder:
+        run(sevenzip,'x',str(small),'-o'+folder,'-y')
+        base=Path(folder)
+        if (base/'$PLUGINSDIR/net48-offline.exe').exists() or (base/'Ycsz-Client-Setup.exe').exists():
+            raise SystemExit('Runtime leaked into runtime-free package')
+        for name in ['Ycsz.exe','Ycsz.Core.dll','Ycsz.exe.config','System.ps1']:
+            if (base/name).read_bytes() != (artifacts/'app'/name).read_bytes():
+                raise SystemExit('Runtime-free application mismatch: '+name)
+        if 'NoRuntime-x64' in small.name and (base/'Ycsz-Client-Setup-NoRuntime.exe').read_bytes() != small_installers[1].read_bytes():
+            raise SystemExit('Runtime-free nested client mismatch')
+logs.append('RESULT four NSIS packages verified; bundled and runtime-free payload comparisons passed (text CRLF/LF normalized). Windows execution evidence is recorded separately.\n')
 (artifacts/'package-results.txt').write_text(''.join(logs), encoding='utf-8')
 
 files = []
 for directory in ['src', 'scripts', 'installer', 'docs', '.github']:
     files.extend(p for p in (root/directory).rglob('*') if p.is_file())
 files.extend(root/name for name in ['README.md','TASK.md','PLAN.md','.gitignore'])
-files.extend([installer,client])
+files.extend([installer,client]+small_installers)
 files.extend(p for p in artifacts.iterdir() if p.is_file() and (p.suffix == '.txt' or p.name == 'SHA256SUMS'))
 archive = artifacts/'Ycsz-1.0.0-delivery.zip'
 with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as out:
     for path in sorted(set(files)):
         out.write(path, str(Path('Ycsz-1.0.0')/path.relative_to(root)))
-checks = ''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in [installer,client,archive])
+checks = ''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in [installer,client]+small_installers+[archive])
 (artifacts/'DELIVERY-SHA256SUMS').write_text(checks,encoding='ascii')
 print(logs[-1].strip())
 print(checks,end='')

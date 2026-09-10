@@ -31,7 +31,7 @@ jobs:
           name: ycsz-windows-x64
           path: |
             artifacts/Ycsz-Setup-*.exe
-            artifacts/Ycsz-Client-Setup.exe
+            artifacts/Ycsz-Client-Setup*.exe
             artifacts/*results*.txt
             artifacts/*build*.txt
             artifacts/SHA256SUMS*

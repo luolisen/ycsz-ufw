@@ -37,6 +37,10 @@ if (!$SkipInstaller) {
     $nsis = (Get-Command makensis.exe -ErrorAction SilentlyContinue).Source
     if (!$nsis) { $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe" }
     if (!(Test-Path $nsis)) { throw 'Install NSIS 3 using its official installer or choco install nsis.' }
+    & $nsis /INPUTCHARSET UTF8 /V3 /DWITHOUT_NET48 /DCLIENT_ONLY /DOUTPUT_FILE=..\artifacts\Ycsz-Client-Setup-NoRuntime.exe installer\Ycsz.nsi | Tee-Object artifacts\client-noruntime-build-windows.txt
+    if ($LASTEXITCODE) { throw 'Runtime-free client build failed' }
+    & $nsis /INPUTCHARSET UTF8 /V3 /DWITHOUT_NET48 /DOUTPUT_FILE=..\artifacts\Ycsz-Setup-1.0.0-NoRuntime-x64.exe installer\Ycsz.nsi | Tee-Object artifacts\noruntime-build-windows.txt
+    if ($LASTEXITCODE) { throw 'Runtime-free manager build failed' }
     & $nsis /INPUTCHARSET UTF8 /V3 /DCLIENT_ONLY /DOUTPUT_FILE=..\artifacts\Ycsz-Client-Setup.exe installer\Ycsz.nsi | Tee-Object artifacts\client-installer-build-windows.txt
     if ($LASTEXITCODE) { throw 'Client installer build failed' }
     & $nsis /INPUTCHARSET UTF8 /V3 installer\Ycsz.nsi | Tee-Object artifacts\installer-build-windows.txt

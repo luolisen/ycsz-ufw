@@ -98,6 +98,13 @@ static class SecurityProbe {
             Check("universal ZIP contains installer and encrypted enrollment",zip.Entries.Count==3 && zip.GetEntry("Ycsz-Client-Setup.exe")!=null && zip.GetEntry("client.ycsz")!=null);
             using(var input=zip.GetEntry("client.ycsz").Open()) using(var bytes=new MemoryStream()) { input.CopyTo(bytes); var exported=Json.Decode<Enrollment>(Crypto.Open(bytes.ToArray(),TestPassword)); Check("export is reusable without device identity",exported.Universal && exported.ClientId==null && exported.BundleId==bundle.BundleId); }
         }
+        string small=ClientPackage.ResolveInstaller(false);
+        Check("runtime choice selects distinct installers",small!=ClientPackage.ResolveInstaller(true));
+        ClientPackage.Export(export,Crypto.Seal(Json.Encode(bundle),TestPassword),small,false);
+        using(var zip=ZipFile.OpenRead(export)) {
+            using(var input=zip.GetEntry("Ycsz-Client-Setup.exe").Open()) using(var bytes=new MemoryStream()) { input.CopyTo(bytes); Check("runtime-free export uses selected installer bytes",Convert.ToBase64String(bytes.ToArray())==Convert.ToBase64String(File.ReadAllBytes(small))); }
+            using(var reader=new StreamReader(zip.GetEntry("安装说明.txt").Open())) Check("runtime-free export explains prerequisite",reader.ReadToEnd().Contains("不内置运行库"));
+        }
         Call("disable-bundles",session);
         var third=EnrollmentRegistry.NewIdentity(bundle,"LAB-THIRD"); Check("disabled bundle blocks new devices",!Register(local,third).Ok);
         Check("disabling bundle preserves existing device heartbeat",Wire.Heartbeat(a,Beat("LAB-RENAMED")).Ok);
