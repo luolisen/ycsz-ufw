@@ -24,6 +24,14 @@ function Remove-FixturePath([string]$Path) {
         }
     }
 }
+function Stop-FixtureProcesses([string]$Path) {
+    for ($attempt = 0; $attempt -lt 3; $attempt++) {
+        $processes = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath -like ($Path + '\*') })
+        if ($processes.Count -eq 0) { return }
+        foreach ($process in $processes) { Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue }
+        Start-Sleep -Seconds 1
+    }
+}
 try {
     New-Item -ItemType Directory $fixture | Out-Null
     Copy-Item "$repo\artifacts\app\Ycsz.exe","$repo\artifacts\app\Ycsz.Core.dll","$repo\artifacts\app\Ycsz.exe.config","$repo\artifacts\app\System.ps1","$repo\artifacts\app\SecurityProbe.exe","$repo\artifacts\Ycsz-Client-Setup.exe","$repo\artifacts\Ycsz-Client-Setup-NoRuntime.exe" $fixture
@@ -104,6 +112,7 @@ ${EndIf}
         & sc.exe delete YcszFirewall | Out-Null
     }
     if ($madeUser) { Remove-LocalUser -Name $user }
+    Stop-FixtureProcesses $fixture
     if ($ownsData -and (Test-Path $data)) { Remove-FixturePath $data }
     if (Test-Path $fixture) { Remove-FixturePath $fixture }
 }
