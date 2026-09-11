@@ -2,19 +2,19 @@
 
 用于 Windows 教育机房的管理端与客户端：集中下发网站白名单、控制客户端网络出口、检查网络配置变更，并记录安全事件。管理端生成一份通用客户端安装包，可在多台电脑上分别安装；客户端自动以 Windows 计算机名称显示，每台设备使用独立身份和认证凭据。
 
-当前版本为 **v1.0.0 正式版**。已完成 Windows 自动化验证和管理端实机卸载、重装、登录验收；完整客户端网络阻断与多机联调仍待验证。产品提供网络与配置保护，不提供磁盘快照或整机重启还原。
+当前版本为 **v1.0.1 修复版**。已完成 Windows 自动化验证和管理端实机卸载、重装、登录验收；完整客户端网络阻断与多机联调仍待验证。产品提供网络与配置保护，不提供磁盘快照或整机重启还原。
 
 ## 下载
 
-前往 [v1.0.0 发布页](https://github.com/luolisen/ycsz-ufw/releases/tag/v1.0.0) 下载。
+前往 [v1.0.1 发布页](https://github.com/luolisen/ycsz-ufw/releases/tag/v1.0.1) 下载。
 
 | 文件 | 用途 |
 | --- | --- |
-| `Ycsz-Setup-1.0.0-x64.exe` | 完整安装包。安装管理端时选此文件，内含生成通用客户端包所需的安装程序 |
-| `Ycsz-Setup-1.0.0-NoRuntime-x64.exe` | 不内置运行库的完整安装包，适合已有 .NET 4.8 的电脑 |
+| `Ycsz-Setup-1.0.1-x64.exe` | 完整安装包。安装管理端时选此文件，内含生成通用客户端包所需的安装程序 |
+| `Ycsz-Setup-1.0.1-NoRuntime-x64.exe` | 不内置运行库的完整安装包，适合已有 .NET 4.8 的电脑 |
 | `Ycsz-Client-Setup.exe` | 内置 .NET 4.8 的客户端专用安装程序；单独下载不含接入配置 |
 | `Ycsz-Client-Setup-NoRuntime.exe` | 不内置运行库的客户端专用安装程序；须已有 .NET 4.8 |
-| `Ycsz-1.0.0-delivery.zip` | 发布时的完整交付快照，包含源码、文档、构建脚本与安装包 |
+| `Ycsz-1.0.1-delivery.zip` | 发布时的完整交付快照，包含源码、文档、构建脚本与安装包 |
 | `DELIVERY-SHA256SUMS` | 四个安装程序及完整交付 ZIP 的 SHA-256 校验值 |
 | `RELEASE-1.0.0-VALIDATION.md` | v1.0.0 管理端实机重装与双版本导出验收记录 |
 
@@ -33,7 +33,7 @@
 
 ## 安装管理端
 
-1. 运行 `Ycsz-Setup-1.0.0-x64.exe`，安装角色选择“管理端”。
+1. 运行 `Ycsz-Setup-1.0.1-x64.exe`，安装角色选择“管理端”。
 2. 设置并确认至少 12 字符的管理密码，完成初始化。
 3. 从开始菜单打开管理界面，用管理密码登录。
 4. 确认服务运行正常后，生成通用客户端包。
@@ -66,7 +66,7 @@
 | 撤销接入 | 撤销选中设备的接入身份 |
 | 锁定并关闭 | 退出当前管理会话 |
 
-安装后重新登录 Windows 可启动托盘，也可运行 `Ycsz.exe --tray`。按住 Shift 并左键点击托盘，输入密码进入管理界面。
+安装完成立即启动托盘，之后每次登录 Windows 自动启动；同一会话只运行一个托盘。双击图标、右键选择“打开管理界面”，或 Shift + 左键点击均可输入密码管理。Windows 可能将图标收纳到托盘上箭头中，可在任务栏设置中设为显示。管理端安装默认创建公共桌面快捷方式。
 
 ## 卸载、重装与恢复
 
@@ -127,6 +127,8 @@ macOS 安装 Mono 和 NSIS 后：
 
 构建需 Python 3.8+，首次会下载并校验微软离线运行库；依赖只在构建时下载，不提交 Git。输出包含完整安装包、客户端专用安装器，各有内置版及 `NoRuntime` 版。macOS 可设置 `YCSZ_PWSH=/path/to/pwsh`，同时执行回环 TLS 和 PowerShell 语法检查。
 
+自保护驱动不随默认构建或安装包生成。具备官方 Windows WDK 的隔离开发机上，可显式执行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -SkipInstaller -BuildDriver`；这只增加 WDK 编译步骤，不代表驱动已签名、安装或加载。驱动的占位 altitude、签名和隔离动态验收见 [驱动工程说明](drivers/YcszProtection/README.md)。
+
 安全集成测试只在一次性 Windows 虚拟机运行：
 
 ```powershell
@@ -145,3 +147,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-Security.ps1 -D
 
 - [.NET 4.8 内置与双版本安装说明](docs/DOTNET48-BUNDLE.md)
 - [v1.0.0 发布验收](docs/RELEASE-1.0.0-VALIDATION.md)
+
+## v1.0.1 修复
+
+修正 WFP 应用程序条件 GUID 错误，解决冻结策略添加 DNS 规则时报 `0x80320002` 并导致服务反复重启的问题；改进本地服务连接超时提示。增加真实 Windows WFP 事务验证，测试添加规则后回滚，不启用阻断策略。详细记录见 [学生端超时与托盘修复](docs/FIX-STU01-TRAY-2026-09-11.md)。
+
+已有 v1.0.0 可使用经过哈希验证的原位更新脚本，保留设备身份、密码与网络基线；正常安装器仍不支持覆盖安装。联想镜像对拷目前不能直接复制已初始化的客户端配置，镜像预装与首次启动独立注册尚未实现。

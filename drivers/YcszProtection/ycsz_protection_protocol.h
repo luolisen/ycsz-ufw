@@ -1,0 +1,94 @@
+#pragma once
+
+#if defined(_KERNEL_MODE)
+#include <ntifs.h>
+#include <ntddk.h>
+#else
+#include <Windows.h>
+#include <winioctl.h>
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define YCP_PROTOCOL_VERSION              1u
+#define YCP_MAX_PATH_CHARS               512u
+#define YCP_MAX_LEASE_SECONDS            900u
+#define YCP_IMAGE_NAME                   L"Ycsz.exe"
+#define YCP_SERVICE_NAME                 L"YcszFirewall"
+#define YCP_DEVICE_DOS_NAME              L"\\DosDevices\\YcszProtection"
+#define YCP_DEVICE_WIN32_NAME            L"\\\\.\\YcszProtection"
+
+#define YCP_DEVICE_TYPE                  0x8000u
+#define YCP_IOCTL_FUNCTION_BASE          0x800u
+
+#define IOCTL_YCP_ACTIVATE \
+    CTL_CODE(YCP_DEVICE_TYPE, YCP_IOCTL_FUNCTION_BASE + 0, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
+#define IOCTL_YCP_ENTER_MAINTENANCE \
+    CTL_CODE(YCP_DEVICE_TYPE, YCP_IOCTL_FUNCTION_BASE + 1, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
+#define IOCTL_YCP_EXIT_MAINTENANCE \
+    CTL_CODE(YCP_DEVICE_TYPE, YCP_IOCTL_FUNCTION_BASE + 2, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
+#define IOCTL_YCP_QUERY_STATUS \
+    CTL_CODE(YCP_DEVICE_TYPE, YCP_IOCTL_FUNCTION_BASE + 3, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
+#define IOCTL_YCP_PREPARE_UNLOAD \
+    CTL_CODE(YCP_DEVICE_TYPE, YCP_IOCTL_FUNCTION_BASE + 4, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
+
+#define YCP_STATE_ACTIVE                 0x00000001u
+#define YCP_STATE_PROCESS_CALLBACK       0x00000002u
+#define YCP_STATE_FILE_FILTER            0x00000004u
+#define YCP_STATE_MAINTENANCE            0x00000008u
+#define YCP_STATE_UNLOAD_PREPARED       0x00000010u
+#define YCP_STATE_ERROR                  0x80000000u
+
+typedef struct _YCP_CONTROL_HEADER {
+    ULONG Size;
+    ULONG Version;
+    ULONGLONG RequestId;
+} YCP_CONTROL_HEADER;
+
+typedef struct _YCP_PROCESS_IDENTITY {
+    ULONG ProcessId;
+    ULONG Reserved;
+    LONGLONG CreateTime100ns;
+    UCHAR ImageSha256[32];
+    UCHAR InstanceNonce[16];
+    WCHAR ImagePath[YCP_MAX_PATH_CHARS];
+} YCP_PROCESS_IDENTITY;
+
+typedef struct _YCP_ACTIVATE_REQUEST {
+    YCP_CONTROL_HEADER Header;
+    YCP_PROCESS_IDENTITY Identity;
+    WCHAR ProtectedRoot[YCP_MAX_PATH_CHARS];
+} YCP_ACTIVATE_REQUEST;
+
+typedef struct _YCP_MAINTENANCE_REQUEST {
+    YCP_CONTROL_HEADER Header;
+    UCHAR LeaseId[16];
+    LONGLONG ExpiresAt100ns;
+} YCP_MAINTENANCE_REQUEST;
+
+typedef struct _YCP_UNLOAD_REQUEST {
+    YCP_CONTROL_HEADER Header;
+    UCHAR LeaseId[16];
+} YCP_UNLOAD_REQUEST;
+
+typedef struct _YCP_STATUS {
+    ULONG Size;
+    ULONG Version;
+    ULONG State;
+    ULONG LastStatus;
+    ULONG TargetPid;
+    ULONG Reserved;
+    LONGLONG TargetCreateTime100ns;
+    LONGLONG MaintenanceExpiresAt100ns;
+    UCHAR LeaseId[16];
+    UCHAR ImageSha256[32];
+    UCHAR InstanceNonce[16];
+    WCHAR ImagePath[YCP_MAX_PATH_CHARS];
+    WCHAR ProtectedRoot[YCP_MAX_PATH_CHARS];
+} YCP_STATUS;
+
+#ifdef __cplusplus
+}
+#endif

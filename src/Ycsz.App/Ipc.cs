@@ -12,11 +12,13 @@ namespace Ycsz {
         public const string Name = "YcszFirewall.Control.v1";
         volatile bool stopping; readonly Func<Packet,Packet> handler; readonly Settings settings;
         readonly LoginGate gate = new LoginGate(); readonly Dictionary<string,DateTime> sessions = new Dictionary<string,DateTime>();
+        readonly Action<Packet,Packet> afterReply;
         Thread thread; NamedPipeServerStream waiting;
-        public IpcServer(Settings s,Func<Packet,Packet> callback) { settings=s; handler=callback; thread=new Thread(Loop) { IsBackground=true }; thread.Start(); }
+        public IpcServer(Settings s,Func<Packet,Packet> callback,Action<Packet,Packet> completed=null) { afterReply=completed; settings=s; handler=callback; thread=new Thread(Loop) { IsBackground=true }; thread.Start(); }
         void Loop() {
             while (!stopping) {
                 try {
+                    Packet completedRequest=null,completedReply=null;
                     var acl = new PipeSecurity(); acl.SetAccessRuleProtection(true,false);
                     acl.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.NetworkSid,null),PipeAccessRights.FullControl,AccessControlType.Deny));
                     acl.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid,null),PipeAccessRights.FullControl,AccessControlType.Allow));
@@ -25,9 +27,9 @@ namespace Ycsz {
                     using (var pipe = new NamedPipeServerStream(Name,PipeDirection.InOut,1,PipeTransmissionMode.Byte,PipeOptions.Asynchronous,4096,4096,acl)) {
                         waiting=pipe; pipe.WaitForConnection(); if (stopping) break;
                         using (var deadline = new Timer(x=> { try { pipe.Dispose(); } catch { } },null,15000,Timeout.Infinite)) {
-                            Packet reply;
+                            Packet reply; Packet request=null;
                             try {
-                                var request = Wire.Receive(pipe);
+                                request = Wire.Receive(pipe);
                                 if (request.Op == "status") reply = new Packet { Ok=true,Data=settings.Role,Status=handler(request).Status };
                                 else if (request.Op == "login") {
                                     if (!gate.Check(request.Password,settings.Password)) reply = new Packet { Error="密码错误或尝试过于频繁，请稍后重试" };
@@ -41,8 +43,10 @@ namespace Ycsz {
                                 }
                             } catch (Exception e) { reply=new Packet { Error=e.Message }; }
                             Wire.Send(pipe,reply);
+                            completedRequest=request; completedReply=reply;
                         }
                     }
+                    if(afterReply!=null) afterReply(completedRequest,completedReply);
                 } catch (Exception e) { if (!stopping) { Store.Log("IPC: "+e.Message); Thread.Sleep(500); } }
             }
         }

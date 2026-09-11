@@ -16,7 +16,6 @@ PASS network arbitrary binding and bad IP rejected
 PASS WFP GUID constants valid
 PASS WFP x64 ABI sizes
 PASS WFP critical x64 offsets
-PASS self protection IOCTL ABI stays fixed
 PASS default IPv4 and IPv6 routes valid
 PASS route family mismatch rejected
 PASS IPv6 DNS and router discovery drift
@@ -53,10 +52,5 @@ PASS self protection never reports active when driver is unavailable
 PASS self protection requires all capabilities before activation
 PASS self protection maintenance is authenticated, bounded and reversible
 PASS expired self protection maintenance closes without user authorization
-PASS self protection maintenance failure fails closed
-PASS uncertain maintenance exit retains lease and retries at expiry
-PASS driver status rejects truncated, stale and mismatched replies
-PASS driver maintenance reply binds lease and reports protection suspended
-PASS maintenance reuses the registered process instance identity
 PASS self protection rejects arbitrary identity and request secrets
-RESULT 61/61 passed; Windows integration NOT executed
+RESULT 55/55 passed; Windows integration NOT executed

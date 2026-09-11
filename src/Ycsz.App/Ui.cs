@@ -20,7 +20,7 @@ namespace Ycsz {
     }
     public sealed class PasswordDialog : Form {
         readonly TextBox password=Theme.Box(true); readonly Label error=new Label { AutoSize=true,ForeColor=Color.Firebrick,MaximumSize=new Size(350,0) };
-        public string Session,Role; readonly PasswordRecord local; readonly LoginGate gate=new LoginGate();
+        public string Session,Role; public string AuthenticatedPassword { get; private set; } readonly PasswordRecord local; readonly LoginGate gate=new LoginGate();
         public PasswordDialog(string title,string subtitle,PasswordRecord record) {
             local=record; Theme.Style(this,title,460,265); FormBorderStyle=FormBorderStyle.FixedDialog; MaximizeBox=false; MinimizeBox=false;
             Controls.Add(Theme.Header(title,subtitle??"请输入管理密码"));
@@ -31,11 +31,12 @@ namespace Ycsz {
         async Task Login() {
             Enabled=false; string value=password.Text; password.Clear();
             try {
-                if(local!=null) { bool ok=await Task.Run(()=>gate.Check(value,local)); if(!ok) throw new InvalidOperationException("密码错误或尝试频繁，请稍后重试"); }
+                if(local!=null) { bool ok=await Task.Run(()=>gate.Check(value,local)); if(!ok) throw new InvalidOperationException("密码错误或尝试频繁，请稍后重试"); AuthenticatedPassword=value; }
                 else { var reply=await Task.Run(()=>Ipc.Call(new Packet { Op="login",Password=value })); Session=reply.Token; Role=reply.Data; }
                 value=null; DialogResult=DialogResult.OK; Close();
             } catch(Exception e) { error.Text=e.Message; } finally { value=null; Enabled=true; }
         }
+        public void ClearAuthenticatedPassword() { AuthenticatedPassword=null; }
     }
     public sealed class TrayContext : ApplicationContext {
         readonly NotifyIcon tray; bool opened; bool refreshing; readonly Timer timer=new Timer { Interval=15000 };
@@ -64,6 +65,10 @@ namespace Ycsz {
             var page=new TabPage(role=="manager"?"客户端设备":"本机状态") { BackColor=Color.White }; tabs.TabPages.Add(page);
             var actions=new FlowLayoutPanel { Dock=DockStyle.Top,Height=48,Padding=new Padding(6) };
             actions.Controls.Add(Theme.Button("刷新",async(s,e)=>await RefreshData()));
+            actions.Controls.Add(Theme.Button("进入自保护维护",async(s,e)=> {
+                if(MessageBox.Show("将开启最长 5 分钟的认证维护窗口，期间允许停服、更新或卸载。通过本机维护停服按钮停止服务后可更新。窗口到期后会重新保护。继续？","自保护维护",MessageBoxButtons.YesNo,MessageBoxIcon.Warning)==DialogResult.Yes) await Perform(()=>Call("self-protection-enter"));
+            }));
+            actions.Controls.Add(Theme.Button("结束自保护维护",async(s,e)=>await Perform(()=>Call("self-protection-exit"))));
             if(role=="manager") {
                 actions.Controls.Add(Theme.Button("生成通用客户端包",async(s,e)=>await Enroll()));
                 actions.Controls.Add(Theme.Button("解冻出口",async(s,e)=>await Thaw(true)));
@@ -74,7 +79,7 @@ namespace Ycsz {
                 foreach(var col in new[]{new[]{"Name","设备名称"},new[]{"LastSeen","最近在线 UTC"},new[]{"Status","防护状态"}}) clients.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName=col[0],HeaderText=col[1] });
                 clients.SelectionChanged+=async(s,e)=> { if(!busy) await LoadSelected(); };
                 page.Controls.Add(clients);
-            } else { var note=new Label { Dock=DockStyle.Fill,Padding=new Padding(25),Text="防护由 Windows 服务运行。关闭此窗口不会停止防护。\r\n\r\n重新打开管理页需要 SHIFT + 点击托盘并输入密码。\r\n\r\n网络配置变更请进入“网络与 hosts”页。",Font=new Font(Font.FontFamily,12) }; page.Controls.Add(note); }
+            } else { var note=new Label { Dock=DockStyle.Fill,Padding=new Padding(25),Text="防护由 Windows 服务运行。关闭此窗口不会停止防护。\r\n\r\n状态栏会明确显示内核自保护驱动是否已启用；服务恢复或托盘恢复不等于拒绝终止验收。\r\n\r\n重新打开管理页需要 SHIFT + 点击托盘并输入密码。\r\n\r\n网络配置变更请进入“网络与 hosts”页。",Font=new Font(Font.FontFamily,12) }; page.Controls.Add(note); }
             page.Controls.Add(actions);
             var net=new TabPage("网络与 hosts") { BackColor=Color.White }; tabs.TabPages.Add(net);
             var netActions=new FlowLayoutPanel { Dock=DockStyle.Top,Height=56,Padding=new Padding(8) };
@@ -88,7 +93,11 @@ namespace Ycsz {
                 var save=Theme.Button("下发至所有客户端",async(s,e)=>await Perform(()=>Call("set-allow",Json.Encode(Rules.Validate(whitelist.Lines))))); save.Dock=DockStyle.Bottom; allow.Controls.Add(save);
             }
             var footer=new FlowLayoutPanel { Dock=DockStyle.Bottom,Height=48,FlowDirection=FlowDirection.RightToLeft,Padding=new Padding(4) };
-            footer.Controls.Add(Theme.Button("锁定并关闭",(s,e)=>Close())); footer.Controls.Add(Theme.Button("卸载本机软件",(s,e)=>Uninstall())); Controls.Add(footer);
+            footer.Controls.Add(Theme.Button("锁定并关闭",(s,e)=>Close()));
+            footer.Controls.Add(Theme.Button("维护停止本机服务",async(s,e)=> {
+                if(MessageBox.Show("仅停止本机 YCSZ 服务以便更新或卸载，不会重启电脑。需要先进入自保护维护窗口。继续？","维护停服",MessageBoxButtons.YesNo,MessageBoxIcon.Warning)==DialogResult.Yes)
+                    await Perform(()=>Call("self-protection-stop"),p=>Close());
+            })); footer.Controls.Add(Theme.Button("卸载本机软件",(s,e)=>Uninstall())); Controls.Add(footer);
             Shown+=async(s,e)=> { await RefreshData(); if(role=="manager") await Perform(()=>{var p=Call("allow"); return p;},p=>whitelist.Lines=Json.Decode<List<string>>(p.Data).ToArray()); timer.Start(); };
             timer.Tick+=async(s,e)=> { if(!busy && tabs.SelectedIndex!=3) await RefreshData(); };
             FormClosed+=(s,e)=> { timer.Stop(); Task.Run(()=>{try{Call("logout");}catch{}}); };

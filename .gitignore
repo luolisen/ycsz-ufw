@@ -1,4 +1,5 @@
 artifacts/app/
+artifacts/driver/
 artifacts/*.exe
 artifacts/*.zip
 artifacts/*.pdb

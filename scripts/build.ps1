@@ -1,4 +1,4 @@
-param([switch]$SkipInstaller)
+param([switch]$SkipInstaller,[switch]$BuildDriver)
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
@@ -9,7 +9,7 @@ $app = @(Get-ChildItem src\Ycsz.App\*.cs | ForEach-Object FullName)
 $tests = @(Get-ChildItem src\Ycsz.Tests\*.cs | ForEach-Object FullName)
 & $csc /nologo /target:library /optimize+ /warnaserror /out:artifacts\app\Ycsz.Core.dll /r:System.Web.Extensions.dll /r:System.Core.dll $core
 if ($LASTEXITCODE) { throw 'Core compile failed' }
-& $csc /nologo /platform:x64 /target:winexe /optimize+ /warnaserror /win32manifest:src\Ycsz.App\app.manifest /out:artifacts\app\Ycsz.exe /r:artifacts\app\Ycsz.Core.dll /r:System.Core.dll /r:System.Security.dll /r:System.ServiceProcess.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Xml.dll /r:System.Xml.Linq.dll $app
+& $csc /nologo /platform:x64 /target:winexe /optimize+ /warnaserror /win32manifest:src\Ycsz.App\app.manifest /out:artifacts\app\Ycsz.exe /r:artifacts\app\Ycsz.Core.dll /r:System.Core.dll /r:System.Security.dll /r:System.ServiceProcess.dll /r:System.Management.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Xml.dll /r:System.Xml.Linq.dll $app
 if ($LASTEXITCODE) { throw 'Application compile failed' }
 Copy-Item src\Ycsz.App\App.config artifacts\app\Ycsz.exe.config -Force
 Copy-Item scripts\System.ps1 artifacts\app\System.ps1 -Force
@@ -23,6 +23,13 @@ if ($LASTEXITCODE) { throw 'TLS probe compile failed' }
 & ./scripts/Test-NetworkLogic.ps1 | Tee-Object artifacts\network-logic-results-windows.txt
 & $csc /nologo /platform:x64 /target:exe /optimize+ /warnaserror /out:artifacts\app\SecurityProbe.exe /r:artifacts\app\Ycsz.Core.dll /r:artifacts\app\Ycsz.exe /r:System.Core.dll /r:System.Security.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll src\Ycsz.Probes\SecurityProbe.cs
 if ($LASTEXITCODE) { throw 'Security probe compile failed' }
+if ($BuildDriver) {
+    $msbuild = (Get-Command msbuild.exe -ErrorAction SilentlyContinue).Source
+    if (!$msbuild) { throw 'BuildDriver requires the Visual Studio/WDK msbuild.exe environment.' }
+    & $msbuild drivers\YcszProtection\YcszProtection.vcxproj /p:Configuration=Release /p:Platform=x64 /m
+    if ($LASTEXITCODE) { throw 'YcszProtection driver build failed' }
+    Write-Output 'Driver source build completed; signing, installation and loading remain separate validation gates.'
+}
 Get-ChildItem artifacts\app | Select-Object Name,Length | Format-Table
 if (!(Test-Path artifacts\app\Ycsz.exe)) {
     Get-MpThreatDetection -ErrorAction SilentlyContinue | Select-Object ThreatID,ActionSuccess,Resources | Format-List

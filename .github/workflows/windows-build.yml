@@ -7,12 +7,31 @@ permissions:
   contents: read
 jobs:
   build:
-    runs-on: windows-2022
+    runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v4
+      - name: Restore pinned WDK and SDK NuGet packages
+        shell: powershell
+        run: nuget restore .\packages.config -PackagesDirectory .\packages
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
       - name: Install NSIS
         shell: powershell
         run: choco install nsis --no-progress -y
+      - name: Build unsigned WDK driver and INF package
+        shell: powershell
+        run: >-
+          msbuild .\drivers\YcszProtection\YcszProtection.vcxproj
+          /p:Configuration=Release /p:Platform=x64
+          /p:YcszRepoRoot="$env:GITHUB_WORKSPACE\"
+          /m /v:minimal
+      - name: Run InfVerif against the source INF
+        shell: powershell
+        run: |
+          $infverif = Get-ChildItem "$env:ProgramFiles(x86)\Windows Kits\10\Tools" -Filter InfVerif.exe -Recurse | Sort-Object FullName -Descending | Select-Object -First 1
+          if (!$infverif) { throw 'InfVerif.exe was not found on the WDK runner.' }
+          & $infverif.FullName /w /v "$env:GITHUB_WORKSPACE\drivers\YcszProtection\YcszProtection.inf" | Tee-Object artifacts/infverif-results-windows.txt
+          if ($LASTEXITCODE -ne 0) { throw "InfVerif failed with exit code $LASTEXITCODE" }
       - name: Compile, test and package
         shell: powershell
         run: ./scripts/build.ps1
@@ -37,4 +56,5 @@ jobs:
             artifacts/Ycsz-Client-Setup*.exe
             artifacts/*results*.txt
             artifacts/*build*.txt
+            artifacts/driver/**
             artifacts/SHA256SUMS*

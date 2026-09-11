@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -32,6 +33,7 @@ static class Tests {
         Test("WFP GUID constants valid",()=> { Is(Wfp.ProviderKey!=Guid.Empty); Is(Wfp.SublayerKey!=Guid.Empty); });
         Test("WFP x64 ABI sizes",()=> { Is(IntPtr.Size==8); Is(Marshal.SizeOf(typeof(Wfp.Value))==16); Is(Marshal.SizeOf(typeof(Wfp.Condition))==40); Is(Marshal.SizeOf(typeof(Wfp.Filter))==200); Is(Marshal.SizeOf(typeof(Wfp.Sublayer))==72); Is(Marshal.SizeOf(typeof(Wfp.Provider))==64); });
         Test("WFP critical x64 offsets",()=> { Is(Marshal.OffsetOf(typeof(Wfp.Filter),"Action").ToInt32()==128); Is(Marshal.OffsetOf(typeof(Wfp.Filter),"Context").ToInt32()==152); Is(Marshal.OffsetOf(typeof(Wfp.Filter),"Id").ToInt32()==176); });
+        Test("self protection IOCTL ABI stays fixed",()=> { Is(WindowsSelfProtectionTransport.ControlHeaderSize==16); Is(WindowsSelfProtectionTransport.ProcessIdentitySize==1088); Is(WindowsSelfProtectionTransport.ActivateRequestSize==2128); Is(WindowsSelfProtectionTransport.MaintenanceRequestSize==40); Is(WindowsSelfProtectionTransport.UnloadRequestSize==32); Is(WindowsSelfProtectionTransport.StatusSize==2152); Is(WindowsSelfProtectionTransport.ActivateIoctl==0x8000e000u); Is(WindowsSelfProtectionTransport.EnterMaintenanceIoctl==0x8000e004u); Is(WindowsSelfProtectionTransport.ExitMaintenanceIoctl==0x8000e008u); Is(WindowsSelfProtectionTransport.QueryStatusIoctl==0x8000e00cu); Is(WindowsSelfProtectionTransport.PrepareUnloadIoctl==0x8000e010u); });
         Test("default IPv4 and IPv6 routes valid",()=> { var b=Snapshot(); b.Adapters[0].Routes=new[]{new RouteSetting { Prefix="0.0.0.0/0",NextHop="192.168.1.1",Metric=5 },new RouteSetting { Prefix="::/0",NextHop="fe80::1",Metric=10 }}; b.Validate(); });
         Test("route family mismatch rejected",()=> { var b=Snapshot(); b.Adapters[0].Routes=new[]{new RouteSetting { Prefix="::/0",NextHop="192.168.1.1",Metric=5 }}; Throws(()=>b.Validate()); });
         Test("IPv6 DNS and router discovery drift",()=> { var b=Snapshot(); var c=Json.Copy(b); c.Adapters[0].RouterDiscovery=false; c.Adapters[0].DnsV6Automatic=false; c.Adapters[0].DnsV6=new[]{"2001:db8::53"}; Is(NetworkCompare.Drift(b,c).Count==1); });
@@ -96,6 +98,150 @@ static class Tests {
         });
         Test("legacy enrollment remains readable",()=> { var legacy=EnrollmentRegistry.NewIdentity(Bundle(),"LAB-01"); legacy.BundleId=null; EnrollmentRegistry.Validate(Json.Copy(legacy)); });
         Test("universal bundle never is a device credential",()=> { var bundle=Bundle(); EnrollmentRegistry.Validate(bundle); Is(bundle.ClientId==null); var node=EnrollmentRegistry.NewIdentity(bundle,"LAB-01"); Is(!node.Universal); });
+        Test("tray supervisor recovers an exited tray after backoff",()=> {
+            var source=new FakeSessionSource { Current=1 }; var runtime=new FakeTrayRuntime(); var messages=new List<string>();
+            var options=new TraySupervisorOptions { PollInterval=TimeSpan.FromSeconds(1),InitialRetryDelay=TimeSpan.FromSeconds(5),MaximumRetryDelay=TimeSpan.FromSeconds(20),LogThrottle=TimeSpan.FromMinutes(1) };
+            var supervisor=new TraySupervisor(source,runtime,m=>messages.Add(m),options); var t=DateTime.UtcNow;
+            supervisor.Tick(t); Is(runtime.StartCount==1 && supervisor.CurrentSessionId==1); runtime.Started[0].Exited=true;
+            supervisor.Tick(t.AddSeconds(1)); Is(runtime.StartCount==1); supervisor.Tick(t.AddSeconds(5)); Is(runtime.StartCount==1); supervisor.Tick(t.AddSeconds(6)); Is(runtime.StartCount==2 && messages.Count==1); supervisor.Dispose();
+        });
+        Test("tray supervisor adopts an existing real instance without duplicate start",()=> {
+            var source=new FakeSessionSource { Current=2 }; var runtime=new FakeTrayRuntime { Existing=new FakeTrayProcess() }; var supervisor=new TraySupervisor(source,runtime, null);
+            supervisor.Tick(DateTime.UtcNow); supervisor.Tick(DateTime.UtcNow.AddSeconds(10)); Is(runtime.StartCount==0 && runtime.FindCount==1); supervisor.Dispose(); Is(runtime.Existing.Disposed);
+        });
+        Test("tray supervisor releases instance when interactive session exits",()=> {
+            var source=new FakeSessionSource { Current=3 }; var runtime=new FakeTrayRuntime(); var supervisor=new TraySupervisor(source,runtime,null); supervisor.Tick(DateTime.UtcNow); Is(runtime.StartCount==1);
+            source.Current=null; supervisor.Tick(DateTime.UtcNow.AddSeconds(1)); Is(runtime.Started[0].Disposed && supervisor.CurrentSessionId==-1); supervisor.Dispose();
+        });
+        Test("tray supervisor backs off repeated launch failures",()=> {
+            var source=new FakeSessionSource { Current=4 }; var runtime=new FakeTrayRuntime { FailStart=true }; var messages=new List<string>();
+            var options=new TraySupervisorOptions { PollInterval=TimeSpan.FromSeconds(1),InitialRetryDelay=TimeSpan.FromSeconds(5),MaximumRetryDelay=TimeSpan.FromSeconds(20),LogThrottle=TimeSpan.FromMinutes(1) };
+            var supervisor=new TraySupervisor(source,runtime,m=>messages.Add(m),options); var t=DateTime.UtcNow;
+            supervisor.Tick(t); supervisor.Tick(t.AddSeconds(4)); Is(runtime.StartCount==1); supervisor.Tick(t.AddSeconds(5)); Is(runtime.StartCount==2); supervisor.Tick(t.AddSeconds(10)); Is(runtime.StartCount==2 && supervisor.NextAttemptUtc==t.AddSeconds(15)); Is(messages.Count==1); supervisor.Dispose();
+        });
+        Test("tray rapid crashes retain backoff until stable uptime",()=> {
+            var runtime=new FakeTrayRuntime(); var supervisor=new TraySupervisor(new FakeSessionSource { Current=1 },runtime,null); var t=DateTime.UtcNow;
+            supervisor.Tick(t); runtime.Started[0].Exited=true; supervisor.Tick(t.AddSeconds(1)); supervisor.Tick(t.AddSeconds(6));
+            runtime.Started[1].Exited=true; supervisor.Tick(t.AddSeconds(7)); Is(supervisor.ConsecutiveFailures==2 && supervisor.NextAttemptUtc==t.AddSeconds(17));
+            supervisor.Tick(t.AddSeconds(12)); Is(runtime.StartCount==2); supervisor.Tick(t.AddSeconds(17)); Is(runtime.StartCount==3);
+            supervisor.Tick(t.AddSeconds(78)); Is(supervisor.ConsecutiveFailures==0); supervisor.Dispose();
+        });
+        Test("normal maintenance stop prevents tray relaunch",()=> {
+            var source=new FakeSessionSource { Current=5 }; var runtime=new FakeTrayRuntime(); var supervisor=new TraySupervisor(source,runtime,null); supervisor.Tick(DateTime.UtcNow); supervisor.Stop(TrayStopReason.Maintenance); runtime.Started[0].Exited=true; supervisor.Tick(DateTime.UtcNow.AddMinutes(1)); Is(runtime.StartCount==1 && supervisor.IsStopping && runtime.Started[0].Disposed); supervisor.Dispose();
+        });
+        Test("self protection never reports active when driver is unavailable",()=> {
+            var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=false,DriverLoaded=false,Error="未加载" });
+            var coordinator=new SelfProtectionCoordinator(transport,Identity, (session,op)=>true, TimeSpan.FromMinutes(5));
+            Is(!coordinator.Activate(DateTime.UtcNow) && coordinator.Status.State==SelfProtectionState.Failed && !coordinator.Status.DriverLoaded && coordinator.Status.UserText().Contains("未启用"));
+        });
+        Test("self protection requires all capabilities before activation",()=> {
+            var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=SelfProtectionCapability.ProcessTermination });
+            var coordinator=new SelfProtectionCoordinator(transport,Identity, (session,op)=>true, TimeSpan.FromMinutes(5));
+            Is(!coordinator.Activate(DateTime.UtcNow) && coordinator.Status.State==SelfProtectionState.Degraded && !coordinator.Status.FileProtectionActive && !coordinator.Status.ServiceStopProtectionActive);
+        });
+        Test("self protection maintenance is authenticated, bounded and reversible",()=> {
+            var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
+            var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full },new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full },new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full });
+            var coordinator=new SelfProtectionCoordinator(transport,Identity, (session,op)=>session=="teacher-session", TimeSpan.FromSeconds(5)); var t=DateTime.UtcNow;
+            Is(coordinator.Activate(t)); Is(!coordinator.Status.ServiceStopProtectionActive); Is(!coordinator.BeginMaintenance("forged-session",t)); Is(coordinator.BeginMaintenance("teacher-session",t)); Is(coordinator.Status.State==SelfProtectionState.Maintenance && coordinator.CanStopService("teacher-session",t.AddSeconds(1))); Is(!coordinator.CanStopService("forged-session",t.AddSeconds(1))); Is(coordinator.EndMaintenance("teacher-session",t.AddSeconds(2)) && coordinator.Status.State==SelfProtectionState.Active);
+        });
+        Test("expired self protection maintenance closes without user authorization",()=> {
+            var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
+            var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full },new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full },new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full });
+            var coordinator=new SelfProtectionCoordinator(transport,Identity, (session,op)=>true, TimeSpan.FromSeconds(5)); var t=DateTime.UtcNow; Is(coordinator.Activate(t)); Is(coordinator.BeginMaintenance("session",t)); coordinator.Tick(t.AddSeconds(6)); Is(coordinator.Status.State==SelfProtectionState.Active && transport.Requests.Count==3);
+        });
+        Test("self protection maintenance failure fails closed",()=> {
+            var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
+            var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full },new SelfProtectionReply { Accepted=false,DriverLoaded=false,Error="synthetic maintenance failure" });
+            var coordinator=new SelfProtectionCoordinator(transport,Identity, (session,op)=>true, TimeSpan.FromMinutes(5)); var t=DateTime.UtcNow; Is(coordinator.Activate(t)); Is(!coordinator.BeginMaintenance("session",t)); Is(coordinator.Status.State==SelfProtectionState.Failed && !coordinator.CanStopService("session",t.AddSeconds(1)));
+        });
+        Test("self protection prepare unload requires the active maintenance lease",()=> {
+            var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
+            var transport=new FakeProtectionTransport(
+                new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full },
+                new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full },
+                new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=SelfProtectionCapability.None },
+                new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full });
+            var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>session=="teacher",TimeSpan.FromMinutes(5));
+            var t=DateTime.UtcNow; Is(coordinator.Activate(t)); Is(!coordinator.PrepareUnload("teacher",t)); Is(coordinator.BeginMaintenance("teacher",t)); Is(coordinator.PrepareUnload("teacher",t.AddSeconds(1))); Is(coordinator.Status.State==SelfProtectionState.Maintenance && coordinator.CanStopService("teacher",t.AddSeconds(2))); Is(coordinator.EndMaintenance("teacher",t.AddSeconds(3)));
+        });
+        Test("failed driver keeps an authenticated recovery stop path",()=> {
+            var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=false,DriverLoaded=false,Error="device absent" });
+            var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromMinutes(5)); var t=DateTime.UtcNow;
+            Is(!coordinator.Activate(t)); Is(coordinator.CanStopForRecovery("logged-in",t)); Is(!coordinator.CanStopForRecovery(null,t));
+        });
+        Test("uncertain maintenance exit retains lease and retries at expiry",()=> {
+            var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
+            var ok=new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full };
+            var transport=new FakeProtectionTransport(ok,ok,new SelfProtectionReply { Accepted=false,DriverLoaded=false,Error="lost response" },ok);
+            var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromSeconds(5));
+            var t=DateTime.UtcNow; Is(coordinator.Activate(t)); Is(coordinator.BeginMaintenance("teacher",t));
+            var lease=coordinator.Status.MaintenanceLeaseId;
+            Is(!coordinator.EndMaintenance("teacher",t.AddSeconds(1)));
+            Is(coordinator.Status.MaintenanceLeaseId==lease && !coordinator.CanStopService("teacher",t.AddSeconds(2)));
+            coordinator.Tick(t.AddSeconds(6)); Is(coordinator.Status.State==SelfProtectionState.Active && transport.Requests.Count==4);
+        });
+        Test("driver status rejects truncated, stale and mismatched replies",()=> {
+            var request=SelfProtectionRequest.Create(SelfProtectionOperation.Activate,Identity(),null,DateTime.MinValue);
+            var valid=DriverStatus(request,false);
+            Is(WindowsSelfProtectionTransport.DecodeStatus(valid,request,"kernel-image","kernel-root").Capabilities==(SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation));
+            Throws(()=>WindowsSelfProtectionTransport.DecodeStatus(new byte[12],request,"kernel-image","kernel-root"));
+            foreach(int offset in new[]{0,4,8,12,16,20,24,32,40,56,88,104,1128}) {
+                var bad=(byte[])valid.Clone(); bad[offset]^=128;
+                Throws(()=>WindowsSelfProtectionTransport.DecodeStatus(bad,request,"kernel-image","kernel-root"));
+            }
+            var unterminated=(byte[])valid.Clone(); for(int i=104;i<1128;i++) unterminated[i]=65;
+            Throws(()=>WindowsSelfProtectionTransport.DecodeStatus(unterminated,request,"kernel-image","kernel-root"));
+        });
+        Test("driver maintenance reply binds lease and reports protection suspended",()=> {
+            var request=SelfProtectionRequest.Create(SelfProtectionOperation.EnterMaintenance,Identity(),Guid.NewGuid().ToString("N"),DateTime.UtcNow.AddMinutes(1));
+            var wire=DriverStatus(request,true);
+            Is(WindowsSelfProtectionTransport.DecodeStatus(wire,request,"kernel-image","kernel-root").Capabilities==SelfProtectionCapability.None);
+            wire[40]^=1; Throws(()=>WindowsSelfProtectionTransport.DecodeStatus(wire,request,"kernel-image","kernel-root"));
+        });
+        Test("maintenance reuses the registered process instance identity",()=> {
+            var ok=new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation };
+            var transport=new FakeProtectionTransport(ok,ok,ok); int captures=0;
+            var coordinator=new SelfProtectionCoordinator(transport,()=>{ captures++; return Identity(); },(session,op)=>true,TimeSpan.FromMinutes(1));
+            var t=DateTime.UtcNow; Is(coordinator.Activate(t)); Is(coordinator.BeginMaintenance("teacher",t)); Is(coordinator.EndMaintenance("teacher",t));
+            Is(captures==1 && Object.ReferenceEquals(transport.Requests[0].Identity,transport.Requests[2].Identity));
+        });
+        Test("self protection rejects arbitrary identity and request secrets",()=> {
+            var identity=Identity(); identity.ImagePath=Path.Combine(Path.GetTempPath(),"not-ycsz.exe"); Throws(()=>identity.Validate());
+            var request=SelfProtectionRequest.Create(SelfProtectionOperation.Activate,Identity(),null,DateTime.MinValue); Is(request.MaintenanceLeaseId==null && request.RequestId.Length==32);
+        });
         Console.WriteLine("RESULT "+(count-failed)+"/"+count+" passed; Windows integration NOT executed"); return failed==0?0:1;
     }
+
+    sealed class FakeSessionSource : IInteractiveSessionSource {
+        public int? Current;
+        public int? GetActiveSessionId() { return Current; }
+    }
+    sealed class FakeTrayRuntime : ITrayRuntime {
+        public bool FailStart; public FakeTrayProcess Existing; public int StartCount,FindCount; public readonly List<FakeTrayProcess> Started=new List<FakeTrayProcess>();
+        public ITrayProcess FindExisting(int sessionId) { FindCount++; return Existing; }
+        public ITrayProcess Start(int sessionId) { StartCount++; if(FailStart) throw new InvalidOperationException("synthetic launch failure"); var process=new FakeTrayProcess(); Started.Add(process); return process; }
+    }
+    sealed class FakeTrayProcess : ITrayProcess {
+        public bool Exited; public bool Disposed;
+        public int ProcessId { get { return 9000; } }
+        public bool HasExited { get { return Exited || Disposed; } }
+        public void Dispose() { Disposed=true; }
+    }
+    sealed class FakeProtectionTransport : ISelfProtectionTransport {
+        readonly Queue<SelfProtectionReply> replies; public readonly List<SelfProtectionRequest> Requests=new List<SelfProtectionRequest>();
+        public FakeProtectionTransport(params SelfProtectionReply[] replies) { this.replies=new Queue<SelfProtectionReply>(replies); }
+        public SelfProtectionReply Send(SelfProtectionRequest request) { request.Validate(DateTime.UtcNow); Requests.Add(request); return replies.Count==0?new SelfProtectionReply { Accepted=false,DriverLoaded=false,Error="no synthetic reply" }:replies.Dequeue(); }
+    }
+    static byte[] DriverStatus(SelfProtectionRequest request,bool maintenance) {
+        var bytes=new byte[2152];
+        Action<int,byte[]> put=(offset,value)=>Array.Copy(value,0,bytes,offset,value.Length);
+        put(0,BitConverter.GetBytes(2152u)); put(4,BitConverter.GetBytes(1u)); put(8,BitConverter.GetBytes(maintenance?15u:7u));
+        put(16,BitConverter.GetBytes((uint)request.Identity.ProcessId)); put(24,BitConverter.GetBytes(request.Identity.StartTimeUtcFileTime));
+        if(maintenance) { put(32,BitConverter.GetBytes(request.MaintenanceExpiresUtcFileTime)); put(40,HexBytes(request.MaintenanceLeaseId)); }
+        put(56,HexBytes(request.Identity.ImageSha256)); put(88,HexBytes(request.Identity.InstanceNonce));
+        put(104,System.Text.Encoding.Unicode.GetBytes("kernel-image")); put(1128,System.Text.Encoding.Unicode.GetBytes("kernel-root")); return bytes;
+    }
+    static byte[] HexBytes(string value) { var result=new byte[value.Length/2]; for(int i=0;i<result.Length;i++) result[i]=Convert.ToByte(value.Substring(i*2,2),16); return result; }
+    static ProtectionIdentity Identity() { return new ProtectionIdentity { ServiceName=ProtectionIdentity.ExpectedServiceName,ProcessId=1234,StartTimeUtcFileTime=DateTime.UtcNow.ToFileTimeUtc(),ImagePath=Path.Combine(Path.GetTempPath(),"Ycsz.exe"),ImageSha256=new string('a',64),InstanceNonce=new string('b',32) }; }
 }

@@ -1,0 +1,76 @@
+;
+; YCSZ Protection minifilter package.
+; This INF is intentionally not included by the normal application installer.
+;
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=ActivityMonitor
+ClassGuid={b86dff51-a31e-4bac-b3cf-e8cfe75c9fc2}
+Provider=%ProviderName%
+DriverVer=09/12/2026,1.0.0.0
+CatalogFile=YcszProtection.cat
+PnpLockdown=1
+
+[DefaultInstall]
+OptionDesc=%ServiceDescription%
+CopyFiles=DriverFiles
+
+[DefaultInstall.NTamd64]
+OptionDesc=%ServiceDescription%
+CopyFiles=DriverFiles
+
+[DefaultInstall.Services]
+AddService=%ServiceName%,0x00000002,ServiceInstall
+
+[DefaultInstall.NTamd64.Services]
+AddService=%ServiceName%,0x00000002,ServiceInstall
+
+[DefaultUninstall]
+DelFiles=DriverFiles
+
+[DefaultUninstall.NTamd64]
+DelFiles=DriverFiles
+
+[DefaultUninstall.Services]
+DelService=%ServiceName%,0x00000200
+
+[DefaultUninstall.NTamd64.Services]
+DelService=%ServiceName%,0x00000200
+
+[DestinationDirs]
+DefaultDestDir=12
+
+[DriverFiles]
+YcszProtection.sys
+
+[SourceDisksFiles]
+YcszProtection.sys=1
+
+[SourceDisksNames]
+1=%DiskName%,,,
+
+[ServiceInstall]
+DisplayName=%ServiceDisplayName%
+Description=%ServiceDescription%
+ServiceBinary=%12%\YcszProtection.sys
+Dependencies=FltMgr
+ServiceType=2
+StartType=3
+ErrorControl=1
+LoadOrderGroup=FSFilter Activity Monitor
+AddReg=Instance.AddReg
+
+[Instance.AddReg]
+HKR,"Instances","DefaultInstance",0x00000000,%InstanceName%
+HKR,"Instances\%InstanceName%","Altitude",0x00000000,%Altitude%
+HKR,"Instances\%InstanceName%","Flags",0x00010001,0
+
+[Strings]
+ProviderName="YCSZ"
+ServiceName="YcszProtection"
+ServiceDisplayName="YCSZ Protection"
+ServiceDescription="YCSZ process-handle and installation-file protection minifilter"
+DiskName="YCSZ Protection Driver Disk"
+InstanceName="YcszProtection Instance"
+Altitude="385200.1234"

@@ -10,17 +10,17 @@ Processing script file: "installer/Ycsz.nsi" (UTF8)
 Processed 1 file, writing output (x86-unicode):
 
 Output: "../artifacts/Ycsz-Client-Setup-NoRuntime.exe"
-Install: 3 pages (192 bytes), 1 section (4120 bytes), 677 instructions (18956 bytes), 268 strings (10144 bytes), 1 language table (278 bytes).
-Uninstall: 2 pages (192 bytes), 1 section (4120 bytes), 113 instructions (3164 bytes), 128 strings (3300 bytes), 1 language table (254 bytes).
-Datablock optimizer saved 26498 bytes (~7.9%).
+Install: 3 pages (192 bytes), 1 section (4120 bytes), 679 instructions (19012 bytes), 269 strings (10176 bytes), 1 language table (278 bytes).
+Uninstall: 2 pages (192 bytes), 1 section (4120 bytes), 114 instructions (3192 bytes), 129 strings (3332 bytes), 1 language table (254 bytes).
+Datablock optimizer saved 26498 bytes (~7.1%).
 
 Using lzma (compress whole) compression.
 
 EXE header size:               51712 / 38912 bytes
-Install code:                          (32106 bytes)
-Install data:                          (236156 bytes)
-Uninstall code+data:                   (30518 bytes)
-Compressed data:               99714 / 298780 bytes
-CRC (0x5171C675):                  4 / 4 bytes
+Install code:                          (32194 bytes)
+Install data:                          (271625 bytes)
+Uninstall code+data:                   (30578 bytes)
+Compressed data:              113024 / 334397 bytes
+CRC (0xDFEBFA2E):                  4 / 4 bytes
 
-Total size:                   151430 / 337696 bytes (44.8%)
+Total size:                   164740 / 373313 bytes (44.1%)

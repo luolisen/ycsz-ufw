@@ -165,6 +165,12 @@ Section "YCSZ" SEC_MAIN
     MessageBox MB_ICONSTOP "服务创建失败。请以管理员身份检查已有服务和初始化文件。"
     Abort
   ${EndIf}
+  nsExec::ExecToLog '"$SYSDIR\sc.exe" sidtype YcszFirewall unrestricted'
+  Pop $0
+  ${If} $0 != 0
+    MessageBox MB_ICONSTOP "服务身份配置失败；安装信息已登记，可通过卸载入口恢复后重试。"
+    Abort
+  ${EndIf}
   nsExec::ExecToLog '"$SYSDIR\sc.exe" description YcszFirewall "Education lab firewall. Administrator-managed, recoverable Windows service."'
   Pop $0
   ${If} $0 != 0
@@ -201,6 +207,8 @@ Section "YCSZ" SEC_MAIN
     ${EndIf}
   ${ElseIf} $0 == 20
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "YcszRole" "client"
+    ; Convenience only: the directory ACL, not Hidden, enforces access control.
+    SetFileAttributes "$INSTDIR" HIDDEN
   ${Else}
     MessageBox MB_ICONSTOP "无法确认安装角色，服务尚未启动。"
     Abort
@@ -214,7 +222,8 @@ Section "YCSZ" SEC_MAIN
   ${If} $0 != 0
     MessageBox MB_ICONEXCLAMATION "安装已完成，但服务启动失败。请查看 ProgramData\YcszFirewall\service.log，或使用管理员恢复步骤。"
   ${EndIf}
-  Exec '"$INSTDIR\Ycsz.exe" --tray'
+  ; The LocalSystem service starts --tray through the logged-on user's normal token.
+  ; Do not launch an elevated GUI from the installer.
 SectionEnd
 Function un.onInit
   SetRegView 64

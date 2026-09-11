@@ -1,6 +1,3 @@
-0400d0f24343d56bfc14de46e23c251d0b3a5884c732490784e6dcb5b7c047e0  artifacts/Ycsz-Setup-1.0.0-x64.exe
-81761e60e5fe431b0c4ca79fdeabe7d8c5d38b051fcbe03e908ef292b4cae38b  artifacts/Ycsz-Client-Setup.exe
-ff55a94f0a1673e5dadd44c927d07d175af0ad9ab61ef0ae9667f2576dd98b14  artifacts/Ycsz-Setup-1.0.0-NoRuntime-x64.exe
-ad45d3c673e4aa5030a116ccd2fddd50ebccd45a85b9b54440beb6021e056eef  artifacts/Ycsz-Client-Setup-NoRuntime.exe
-492d5dff7f15e0507e2045c69773e82fd55f10b5175226a86c89558246ca3bc1  artifacts/app/Ycsz.exe
-922e215531a6c91c7e8980ef23e4e5714fe827a177d48e980e42978b6cc0b821  artifacts/app/Ycsz.Core.dll
+a48433ba1e55f5d490a46047f0878c384e7f05ee4cdb677716b3e7d6c4c4ebed  artifacts/Ycsz-Setup-1.0.1-x64.exe
+585e294be09a2c25d57a8801ec249a68aa8211b88f9e0a8e47dff4f25618ae5e  artifacts/app/Ycsz.exe
+65a3cb410013923af96a6004683913294bc296f0d3c6508c2edc7cf29b18f707  artifacts/app/Ycsz.Core.dll

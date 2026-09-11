@@ -1,0 +1,9 @@
+PASS multiple opens, cleanup retains references, final close, unload excludes new opens
+PASS active protection requires preparation and a still-valid lease at unload
+PASS lease expiry while waiting for a connection to close revokes unload
+PASS invalid opens and unmatched closes cannot corrupt the reference count
+PASS mandatory callback requests cleanup; this is not a veto capability
+RESULT 5 lifecycle scenarios passed; Windows/WDK, forced-unload races and I/O-manager semantics NOT tested
+
+Static check: ActivityMonitor class GUID and project/filter XML syntax passed.
+PowerShell source gates updated but not executed: pwsh is unavailable.

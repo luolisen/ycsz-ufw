@@ -8,18 +8,18 @@ Processing script file: "installer/Ycsz.nsi" (UTF8)
 
 Processed 1 file, writing output (x86-unicode):
 
-Output: "/Users/alan/Desktop/ycsz-ufw/artifacts/Ycsz-Client-Setup.exe"
-Install: 3 pages (192 bytes), 1 section (4120 bytes), 683 instructions (19124 bytes), 271 strings (10340 bytes), 1 language table (278 bytes).
-Uninstall: 2 pages (192 bytes), 1 section (4120 bytes), 113 instructions (3164 bytes), 128 strings (3300 bytes), 1 language table (254 bytes).
+Output: "../artifacts/Ycsz-Client-Setup.exe"
+Install: 3 pages (192 bytes), 1 section (4120 bytes), 685 instructions (19180 bytes), 272 strings (10372 bytes), 1 language table (278 bytes).
+Uninstall: 2 pages (192 bytes), 1 section (4120 bytes), 114 instructions (3192 bytes), 129 strings (3332 bytes), 1 language table (254 bytes).
 Datablock optimizer saved 26498 bytes (~0.0%).
 
 Using lzma (compress whole) compression.
 
 EXE header size:               51712 / 38912 bytes
-Install code:                          (32470 bytes)
-Install data:                          (121582728 bytes)
-Uninstall code+data:                   (30518 bytes)
-Compressed data:           122956853 / 121645716 bytes
-CRC (0xFBDF5854):                  4 / 4 bytes
+Install code:                          (32558 bytes)
+Install data:                          (121618197 bytes)
+Uninstall code+data:                   (30578 bytes)
+Compressed data:           122970547 / 121681333 bytes
+CRC (0xE34B5F29):                  4 / 4 bytes
 
-Total size:                123008569 / 121684632 bytes (101.0%)
+Total size:                123022263 / 121720249 bytes (101.0%)

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{C4BCA981-93C7-4D8C-8D12-58A4E13E6A1A}</UniqueIdentifier>
+      <Extensions>c;cpp;cxx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{5D0BCB7D-6E34-4E24-A7C1-15E6F36E52B0}</UniqueIdentifier>
+      <Extensions>h;hpp;hxx</Extensions>
+    </Filter>
+    <Filter Include="Driver Package">
+      <UniqueIdentifier>{1A054E4D-946B-4CB0-A7ED-C0C8BCFC0D05}</UniqueIdentifier>
+      <Extensions>inf;inx;cat</Extensions>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="ycsz_protection.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ycsz_minifilter.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="ycsz_protection.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ycsz_protection_protocol.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Inf Include="YcszProtection.inf">
+      <Filter>Driver Package</Filter>
+    </Inf>
+  </ItemGroup>
+</Project>
