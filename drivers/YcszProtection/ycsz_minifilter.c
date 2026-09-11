@@ -47,14 +47,56 @@ YcpStreamIsProtected(
 }
 
 static BOOLEAN
+YcpAttachProtectedStreamContext(
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
+    _In_ PLARGE_INTEGER FileId
+    )
+{
+    PFLT_CONTEXT context = NULL;
+    PFLT_CONTEXT oldContext = NULL;
+    PFLT_FILTER filter = NULL;
+    NTSTATUS status;
+
+    if (FltObjects == NULL || FltObjects->Instance == NULL ||
+        FltObjects->FileObject == NULL || FileId == NULL) {
+        return FALSE;
+    }
+    status = FltGetFilterFromInstance(FltObjects->Instance, &filter);
+    if (!NT_SUCCESS(status) || filter == NULL) {
+        return FALSE;
+    }
+    status = FltAllocateContext(
+        filter,
+        FLT_STREAM_CONTEXT,
+        sizeof(YCP_STREAM_CONTEXT),
+        NonPagedPoolNx,
+        &context);
+    FltObjectDereference(filter);
+    if (!NT_SUCCESS(status)) {
+        return FALSE;
+    }
+    ((PYCP_STREAM_CONTEXT)context)->Version = 1;
+    ((PYCP_STREAM_CONTEXT)context)->ProductStream = TRUE;
+    ((PYCP_STREAM_CONTEXT)context)->FileId = *FileId;
+    status = FltSetStreamContext(
+        FltObjects->Instance,
+        FltObjects->FileObject,
+        FLT_SET_CONTEXT_KEEP_IF_EXISTS,
+        context,
+        &oldContext);
+    FltReleaseContext(context);
+    if (oldContext != NULL) {
+        FltReleaseContext(oldContext);
+    }
+    return NT_SUCCESS(status) || status == STATUS_FLT_CONTEXT_ALREADY_DEFINED;
+}
+
+static BOOLEAN
 YcpMarkProtectedStream(
     _In_ PCFLT_RELATED_OBJECTS FltObjects
     )
 {
     FILE_INTERNAL_INFORMATION fileInformation;
-    PFLT_CONTEXT context = NULL;
-    PFLT_CONTEXT oldContext = NULL;
-    PFLT_FILTER filter;
     NTSTATUS status;
 
     if (FltObjects == NULL || FltObjects->Instance == NULL || FltObjects->FileObject == NULL) {
@@ -70,33 +112,7 @@ YcpMarkProtectedStream(
     if (!NT_SUCCESS(status)) {
         return FALSE;
     }
-    status = FltGetFilterFromInstance(FltObjects->Instance, &filter);
-    if (!NT_SUCCESS(status) || filter == NULL) {
-        return FALSE;
-    }
-    status = FltAllocateContext(
-        filter,
-        FLT_STREAM_CONTEXT,
-        sizeof(YCP_STREAM_CONTEXT),
-        NonPagedPoolNx,
-        &context);
-    if (!NT_SUCCESS(status)) {
-        return FALSE;
-    }
-    ((PYCP_STREAM_CONTEXT)context)->Version = 1;
-    ((PYCP_STREAM_CONTEXT)context)->ProductStream = TRUE;
-    ((PYCP_STREAM_CONTEXT)context)->FileId = fileInformation.IndexNumber;
-    status = FltSetStreamContext(
-        FltObjects->Instance,
-        FltObjects->FileObject,
-        FLT_SET_CONTEXT_KEEP_IF_EXISTS,
-        context,
-        &oldContext);
-    FltReleaseContext(context);
-    if (oldContext != NULL) {
-        FltReleaseContext(oldContext);
-    }
-    return NT_SUCCESS(status) || status == STATUS_FLT_CONTEXT_ALREADY_DEFINED;
+    return YcpAttachProtectedStreamContext(FltObjects, &fileInformation.IndexNumber);
 }
 
 static BOOLEAN

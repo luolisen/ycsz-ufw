@@ -62,6 +62,8 @@ function Invoke-StaticChecks {
         @('stream identity query', $filter, 'FileInternalInformation'),
         @('stream context lookup', $filter, 'FltGetStreamContext'),
         @('stream context registration', $filter, 'FltSetStreamContext'),
+        @('stream context helper', $filter, 'YcpAttachProtectedStreamContext'),
+        @('filter reference release', $filter, 'FltObjectDereference'),
         @('paging write compatibility', $filter, 'IRP_PAGING_IO'),
         @('reparse gate', $filter, 'FSCTL_SET_REPARSE_POINT'),
         @('v2 user ABI', $transport, 'StateDataRoot'),
