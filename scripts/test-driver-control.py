@@ -36,7 +36,7 @@ def extract(name):
             end += 1
     return 'static NTSTATUS\n' + source[start:end] + '\n'
 
-def extract_filter_boolean(name):
+def extract_filter_boolean(name, return_type="BOOLEAN"):
     marker = '\n' + name + '('
     start = filter_source.index(marker) + 1
     opening = filter_source.index('{', start)
@@ -48,7 +48,7 @@ def extract_filter_boolean(name):
         elif filter_source[end] == '}':
             depth -= 1
         end += 1
-    return 'static BOOLEAN\n' + filter_source[start:end] + '\n'
+    return 'static '+return_type+'\n' + filter_source[start:end] + '\n'
 
 with tempfile.TemporaryDirectory(prefix='ycsz-control-test-') as tmp:
     work = Path(tmp)
@@ -65,3 +65,10 @@ with tempfile.TemporaryDirectory(prefix='ycsz-control-test-') as tmp:
     subprocess.run(compiler + ['-std=c11', '-Wall', '-Wextra', '-Werror',
                               str(work / 'stream_context_lifecycle.c'), '-o', str(work / 'stream-test')], check=True)
     subprocess.run([str(work / 'stream-test')], check=True)
+
+    (work / 'precreate_extracted.inc').write_text(
+        extract_filter_boolean('YcpPreOperationFile','FLT_PREOP_CALLBACK_STATUS'))
+    shutil.copy2(driver / 'tests/precreate_dispatch.c', work)
+    subprocess.run(compiler + ['-std=c11', '-Wall', '-Wextra', '-Werror',
+                              str(work / 'precreate_dispatch.c'), '-o', str(work / 'precreate-test')], check=True)
+    subprocess.run([str(work / 'precreate-test')], check=True)

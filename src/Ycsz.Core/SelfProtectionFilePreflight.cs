@@ -23,7 +23,9 @@ namespace Ycsz {
 
         internal SelfProtectionPreflightResult(bool passed,int scannedEntries,IList<string> issues) {
             Passed=passed;
-            MappingWritebackConditionMet=passed;
+            // Directory/link inspection does not detect existing writable
+            // sections or prove cache writeback ownership. Do not claim it does.
+            MappingWritebackConditionMet=false;
             ScannedEntries=scannedEntries;
             Issues=issues??new List<string>();
         }

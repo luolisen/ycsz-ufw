@@ -145,7 +145,7 @@ static class Tests {
                 Observation("data",7,12,false,true,true),
                 Observation("data/state.db",7,13,false,true,false)
             });
-            Is(result.Passed && result.MappingWritebackConditionMet && result.ScannedEntries==3 && result.Issues.Count==0);
+            Is(result.Passed && !result.MappingWritebackConditionMet && result.ScannedEntries==3 && result.Issues.Count==0);
         });
         Test("activation preflight fails before transport and does not claim mapped-write protection",()=> {
             var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
@@ -153,11 +153,11 @@ static class Tests {
             var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromMinutes(5),()=>SelfProtectionFilePreflight.Evaluate(new[] { Observation("alias",7,12,false,true,false),Observation("state",7,12,false,true,false) }));
             Is(!coordinator.Activate(DateTime.UtcNow) && transport.Requests.Count==0 && coordinator.Status.State==SelfProtectionState.Failed && !coordinator.Status.MappingWritebackConditionMet);
         });
-        Test("successful activation records the mapped-write precondition separately",()=> {
+        Test("successful file preflight does not prove mapped-write protection",()=> {
             var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
             var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full });
             var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromMinutes(5),()=>SelfProtectionFilePreflight.Evaluate(new[] { Observation("state",7,12,false,true,false) }));
-            Is(coordinator.Activate(DateTime.UtcNow) && transport.Requests.Count==1 && coordinator.Status.MappingWritebackConditionMet && coordinator.Status.UserText().IndexOf("映射写回条件未满足",StringComparison.Ordinal)<0);
+            Is(coordinator.Activate(DateTime.UtcNow) && transport.Requests.Count==1 && !coordinator.Status.MappingWritebackConditionMet && coordinator.Status.UserText().IndexOf("映射写回条件未满足",StringComparison.Ordinal)>=0);
         });
         Test("self protection never reports active when driver is unavailable",()=> {
             var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=false,DriverLoaded=false,Error="未加载" });

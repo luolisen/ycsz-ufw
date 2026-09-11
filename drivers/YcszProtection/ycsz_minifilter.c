@@ -312,12 +312,15 @@ YcpPreOperationFile(
     BOOLEAN mutation = FALSE;
     BOOLEAN trustedWriter;
     BOOLEAN streamProtected;
+    FLT_PREOP_CALLBACK_STATUS allowedStatus = FLT_PREOP_SUCCESS_NO_CALLBACK;
 
-    UNREFERENCED_PARAMETER(CompletionContext);
+    if (CompletionContext != NULL) *CompletionContext = NULL;
 
     if (Data == NULL || Data->Iopb == NULL || !YcpProtectionIsActive()) {
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        return allowedStatus;
     }
+
+    if (Data->Iopb->MajorFunction == IRP_MJ_CREATE) allowedStatus = FLT_PREOP_SUCCESS_WITH_CALLBACK;
 
     switch (Data->Iopb->MajorFunction) {
     case IRP_MJ_CREATE:
@@ -327,7 +330,7 @@ YcpPreOperationFile(
     case IRP_MJ_WRITE:
         // Cache-manager paging writes cannot be attributed to the original
         // authorized writer. Denying them risks corrupting legitimate data.
-        if ((Data->Iopb->IrpFlags & IRP_PAGING_IO) != 0) return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        if ((Data->Iopb->IrpFlags & IRP_PAGING_IO) != 0) return allowedStatus;
         mutation = TRUE;
         break;
 
@@ -346,7 +349,7 @@ YcpPreOperationFile(
         mutation = FALSE;
         break;
     }
-    if (!mutation) return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    if (!mutation) return allowedStatus;
 
     streamProtected = YcpStreamIsProtected(FltObjects);
     sourceProtected = streamProtected;
@@ -376,7 +379,7 @@ YcpPreOperationFile(
     }
 
     trustedWriter = YcpIsTrustedWriter(Data);
-    if (trustedWriter && !YcpIsNamespaceMutation(Data)) return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    if (trustedWriter && !YcpIsNamespaceMutation(Data)) return allowedStatus;
     // Never deny unrelated or unresolved filesystem operations globally.
     // Unresolved aliases require file/stream identity tracking before they can
     // safely be protected; a missing name is not proof of product ownership.
@@ -387,11 +390,11 @@ YcpPreOperationFile(
                 sourceProtected,
                 destinationProtected,
                 destinationResolved)) {
-            return FLT_PREOP_SUCCESS_NO_CALLBACK;
+            return allowedStatus;
         }
         return YcpDenyMutation(Data);
     }
-    return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    return allowedStatus;
 }
 
 static FLT_POSTOP_CALLBACK_STATUS
@@ -406,10 +409,10 @@ YcpPostOperationFile(
     NTSTATUS status;
 
     UNREFERENCED_PARAMETER(CompletionContext);
-    UNREFERENCED_PARAMETER(Flags);
+    if ((Flags & FLTFL_POST_OPERATION_DRAINING) != 0) return FLT_POSTOP_FINISHED_PROCESSING;
 
     if (Data == NULL || FltObjects == NULL ||
-        !NT_SUCCESS(Data->IoStatus.Status) || !YcpProtectionIsActive()) {
+        !NT_SUCCESS(Data->IoStatus.Status) || Data->IoStatus.Status == STATUS_REPARSE || !YcpProtectionIsActive()) {
         return FLT_POSTOP_FINISHED_PROCESSING;
     }
     status = FltGetFileNameInformation(
