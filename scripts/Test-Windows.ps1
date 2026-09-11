@@ -91,5 +91,9 @@ if ($Mode -eq 'Static') {
     Check 'SCM failure recovery configured' { $r=Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Services\YcszFirewall; if (!$r.FailureActions) { throw 'Missing failure actions' } }
 }
 $results | Format-Table -AutoSize
+$results | Where-Object Result -eq 'FAIL' | ForEach-Object {
+    Write-Output "FAIL DETAIL: $($_.Test)"
+    Write-Output $_.Detail
+}
 if (@($results | Where-Object Result -eq 'FAIL').Count) { exit 1 }
 Write-Output 'Read-only checks complete. Network enforcement, GUI, TLS and rollback still require the manual VM test matrix.'
