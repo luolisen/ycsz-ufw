@@ -171,8 +171,8 @@ YcpCopyString(
         return STATUS_INVALID_PARAMETER;
     }
 
-    buffer = (PWCH)ExAllocatePoolWithTag(
-        NonPagedPoolNx,
+    buffer = (PWCH)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED,
         Source->Length + sizeof(WCHAR),
         YCP_POOL_TAG);
     if (buffer == NULL) {
@@ -391,9 +391,13 @@ YcpLoadTrustedImage(_In_ PUNICODE_STRING RegistryPath)
     UNICODE_STRING devicePrefix = RTL_CONSTANT_STRING(L"\\Device\\");
     PKEY_VALUE_PARTIAL_INFORMATION value;
     ULONG length = FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data) + sizeof(g_YcpTrustedImageBuffer);
+    ULONG dataOffset = (ULONG)FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data);
     ULONG returned = 0;
     NTSTATUS status;
-    value = ExAllocatePoolWithTag(PagedPool, length, YCP_POOL_TAG);
+    value = (PKEY_VALUE_PARTIAL_INFORMATION)ExAllocatePool2(
+        POOL_FLAG_PAGED,
+        length,
+        YCP_POOL_TAG);
     if (value == NULL) return STATUS_INSUFFICIENT_RESOURCES;
     InitializeObjectAttributes(&attributes, RegistryPath, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
     status = ZwOpenKey(&serviceKey, KEY_READ, &attributes);
@@ -405,9 +409,9 @@ YcpLoadTrustedImage(_In_ PUNICODE_STRING RegistryPath)
         status = ZwQueryValueKey(parametersKey, &valueName, KeyValuePartialInformation, value, length, &returned);
     }
     if (NT_SUCCESS(status)) {
-        if (returned < FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data) || value->Type != REG_SZ ||
+        if (returned < dataOffset || value->Type != REG_SZ ||
             value->DataLength < 2 * sizeof(WCHAR) || value->DataLength > sizeof(g_YcpTrustedImageBuffer) ||
-            value->DataLength > returned - FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data) ||
+            value->DataLength > returned - dataOffset ||
             value->DataLength % sizeof(WCHAR) != 0) {
             status = STATUS_INVALID_PARAMETER;
         } else {
