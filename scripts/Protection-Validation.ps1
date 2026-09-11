@@ -58,6 +58,76 @@ function Assert-ProtectionPackage([string]$PublishedName,$Package) {
     }
 }
 
+function Test-IsProtectionPackage($Package) {
+    if ($null -eq $Package) { return $false }
+    return [IO.Path]::GetFileName([string]$Package.OriginalFileName) -ieq 'YcszProtection.inf' -and
+        [string]$Package.ProviderName -ieq 'YCSZ' -and
+        [string]$Package.ClassName -ieq 'ActivityMonitor'
+}
+
+function Get-ProtectionPackageName($Package) {
+    if ($null -eq $Package -or [string]::IsNullOrWhiteSpace([string]$Package.Driver)) { return $null }
+    $name = [IO.Path]::GetFileName([string]$Package.Driver)
+    if ($name -notmatch '^oem[0-9]+\.inf$') { return $null }
+    return $name.ToLowerInvariant()
+}
+
+function Get-ProtectionPackageSnapshot {
+    return @(Get-WindowsDriver -Online -ErrorAction Stop | ForEach-Object { $_ })
+}
+
+function Get-ProtectionPackageDelta([object[]]$Before,[object[]]$After) {
+    $beforeMap=@{}; $afterMap=@{}
+    foreach ($package in @($Before)) {
+        $name=Get-ProtectionPackageName $package
+        if ($name) { $beforeMap[$name]=$package }
+    }
+    foreach ($package in @($After)) {
+        $name=Get-ProtectionPackageName $package
+        if ($name) { $afterMap[$name]=$package }
+    }
+    $newNames=@($afterMap.Keys | Where-Object { !$beforeMap.ContainsKey($_) } | Sort-Object)
+    $removedNames=@($beforeMap.Keys | Where-Object { !$afterMap.ContainsKey($_) } | Sort-Object)
+    $newPackages=@($newNames | ForEach-Object { $afterMap[$_] })
+    $removedPackages=@($removedNames | ForEach-Object { $beforeMap[$_] })
+    $beforeProtection=@($beforeMap.Values | Where-Object { Test-IsProtectionPackage $_ })
+    $afterProtection=@($afterMap.Values | Where-Object { Test-IsProtectionPackage $_ })
+    $newProtection=@($newPackages | Where-Object { Test-IsProtectionPackage $_ })
+    $removedProtection=@($removedPackages | Where-Object { Test-IsProtectionPackage $_ })
+    $newOther=@($newPackages | Where-Object { !(Test-IsProtectionPackage $_) })
+    return [pscustomobject]@{
+        Before=@($Before); After=@($After); NewNames=$newNames; RemovedNames=$removedNames
+        NewPackages=$newPackages; RemovedPackages=$removedPackages
+        BeforeProtection=$beforeProtection; AfterProtection=$afterProtection
+        NewProtection=$newProtection; RemovedProtection=$removedProtection; NewOther=$newOther
+    }
+}
+
+function Assert-ProtectionPackageDelta($Delta,[switch]$AllowNoop) {
+    if ($null -eq $Delta) { throw 'Protection package delta is missing.' }
+    if (@($Delta.RemovedProtection).Count -gt 0) { throw 'An existing YCSZ protection package disappeared during installation.' }
+    if (@($Delta.NewOther).Count -gt 0) { throw 'An unrelated driver package appeared; no package will be deleted automatically.' }
+    if (@($Delta.NewProtection).Count -gt 1) { throw 'More than one new YCSZ protection package appeared; refusing ambiguous rollback.' }
+    if (!$AllowNoop -and @($Delta.BeforeProtection).Count -eq 0 -and @($Delta.NewProtection).Count -eq 0) {
+        throw 'No new YCSZ protection package was observable after installation.'
+    }
+    if (@($Delta.AfterProtection).Count -eq 0) { throw 'No YCSZ protection package is present after installation.' }
+    return $Delta
+}
+
+function New-ProtectionRollbackPlan($Before,$After,[bool]$DriverWasRegistered,[bool]$ApplicationWasRunning) {
+    $delta=Get-ProtectionPackageDelta $Before $After
+    Assert-ProtectionPackageDelta $delta -AllowNoop:($DriverWasRegistered -and @($delta.NewProtection).Count -eq 0) | Out-Null
+    return [pscustomobject]@{
+        Delta=$delta
+        NewProtectionNames=@($delta.NewProtection | ForEach-Object { Get-ProtectionPackageName $_ })
+        ExistingProtectionNames=@($delta.BeforeProtection | ForEach-Object { Get-ProtectionPackageName $_ })
+        RestoreOldPackage=(@($delta.BeforeProtection).Count -gt 0)
+        RemoveNewRegistration=(-not $DriverWasRegistered)
+        RestartApplication=$ApplicationWasRunning
+    }
+}
+
 function Assert-ProtectionRollbackStopped($ApplicationService,$DriverService) {
     foreach ($service in @($ApplicationService,$DriverService)) {
         if ($null -ne $service -and $service.Status -ne 'Stopped') {

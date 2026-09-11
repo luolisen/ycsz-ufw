@@ -41,7 +41,7 @@ if ($Mode -eq 'Static') {
         }
         if (!(Test-Path (Join-Path $repo 'scripts\Test-ProtectionDriver.ps1'))) { throw 'Dynamic driver validation tool missing' }
         $source=(Get-Content (Join-Path $driver 'ycsz_protection.c') -Raw) + (Get-Content (Join-Path $driver 'ycsz_minifilter.c') -Raw)
-        foreach ($needle in @('OB_OPERATION_HANDLE_CREATE','OB_OPERATION_HANDLE_DUPLICATE','PROCESS_TERMINATE','IRP_MJ_WRITE','FileDispositionInformation','FileRenameInformation','IOCTL_YCP_REGISTER_TRAY','YcpIsTrustedWriter','FSCTL_SET_REPARSE_POINT','ProtectedDataRoot','TrustedDataRoot')) {
+        foreach ($needle in @('OB_OPERATION_HANDLE_CREATE','OB_OPERATION_HANDLE_DUPLICATE','PROCESS_TERMINATE','IRP_MJ_WRITE','FileDispositionInformation','FileRenameInformation','IOCTL_YCP_REGISTER_TRAY','YcpIsTrustedWriter','FSCTL_SET_REPARSE_POINT','ProtectedDataRoot','TrustedDataRoot','FLT_STREAM_CONTEXT','FltGetStreamContext','FltSetStreamContext','FltQueryInformationFile','FileInternalInformation','YcpPostOperationFile')) {
             if ($source -notmatch [regex]::Escape($needle)) { throw "Driver source gate missing: $needle" }
         }
         if ($source -match 'Ioctl.*PID|arbitrary.*PID') { throw 'Driver source appears to expose an arbitrary PID control path' }
@@ -62,7 +62,9 @@ if ($Mode -eq 'Static') {
         if ($program -notmatch 'new WindowsSelfProtectionTransport\(Store\.Root\)') { throw 'Service does not bind the fixed ProgramData root to the device transport' }
         if ($program -notmatch 'self-protection-enter' -or $program -notmatch 'self-protection-exit') { throw 'Authenticated maintenance IPC operations missing' }
         if ($program -notmatch 'self-protection-prepare-unload' -or $program -notmatch 'PrepareUnload') { throw 'Authenticated unload preparation path missing' }
-        if ($transport -notmatch 'QueryDosDevice' -or $transport -notmatch 'StateDataRoot' -or $transport -notmatch 'RegisterTray' -or $driver -notmatch 'SeLocateProcessImageName') { throw 'Fixed image identity, dual-root or tray contract missing' }
+        $preflight=Get-Content (Join-Path $repo 'src\Ycsz.Core\SelfProtectionFilePreflight.cs') -Raw
+        if ($transport -notmatch 'QueryDosDevice' -or $transport -notmatch 'StateDataRoot' -or $transport -notmatch 'RegisterTray' -or $driver -notmatch 'SeLocateProcessImageName' -or $preflight -notmatch 'GetFileInformationByHandle') { throw 'Fixed image identity, dual-root, file identity or tray contract missing' }
+        if ($program -notmatch 'SelfProtectionFilePreflight' -or $preflight -notmatch 'MappingWritebackConditionMet') { throw 'Activation preflight or mapped-write condition missing' }
         if ($program -notmatch '--protection-status' -or $program -notmatch 'RegisterTray') { throw 'Actual activation or tray registration path missing' }
         if ($transport -match 'ServiceStop') { throw 'Transport must not report unimplemented kernel ServiceStop capability' }
         if ($program -notmatch 'CanStop=!protectedService' -or $program -notmatch 'self-protection-stop' -or $program -match 'SetServiceStatus') { throw 'Fixed SCM controls/authenticated internal stop contract missing' }
@@ -71,9 +73,10 @@ if ($Mode -eq 'Static') {
         $install=Get-Content (Join-Path $repo 'scripts\Install-Protection.ps1') -Raw
         $validation=Get-Content (Join-Path $repo 'scripts\Protection-Validation.ps1') -Raw
         $remove=Get-Content (Join-Path $repo 'scripts\Remove-Protection.ps1') -Raw
-        foreach ($needle in @('TrustedImagePath','TrustedDataRoot','sidtype','QueryDosDevice','Get-AuthenticodeSignature','Assert-ProtectionCatalogMembers','Protection-Validation.ps1','--protection-status','pnputil','oldDataRoot')) {
+        foreach ($needle in @('TrustedImagePath','TrustedDataRoot','sidtype','QueryDosDevice','Get-AuthenticodeSignature','Assert-ProtectionCatalogMembers','Protection-Validation.ps1','--protection-status','pnputil','oldDataRoot','Get-ProtectionPackageSnapshot','New-ProtectionRollbackPlan','oldPackageInf','packagePlan')) {
             if ($install -notmatch [regex]::Escape($needle)) { throw "Protection installer gate missing: $needle" }
         }
+        if ($install -match 'Published Name') { throw 'Protection installer must not parse localized pnputil Published Name output' }
         foreach ($needle in @('Resolve-ProtectionSignTool','signtool.exe','verify /kp /c','LASTEXITCODE')) {
             if ($validation -notmatch [regex]::Escape($needle)) { throw "Protection validation gate missing: $needle" }
         }

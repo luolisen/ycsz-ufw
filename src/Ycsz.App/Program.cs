@@ -145,7 +145,8 @@ namespace Ycsz {
                 new WindowsSelfProtectionTransport(Store.Root),
                 ()=>ProtectionIdentity.CaptureCurrent(Path.Combine(Store.Bin,"Ycsz.exe")),
                 (session,operation)=>!String.IsNullOrWhiteSpace(session),
-                TimeSpan.FromMinutes(5));
+                TimeSpan.FromMinutes(5),
+                ()=>SelfProtectionFilePreflight.Check(Path.GetDirectoryName(Path.Combine(Store.Bin,"Ycsz.exe")),Store.Root));
             bool protectionReady=!protectedService || selfProtection.Activate(DateTime.UtcNow);
             Store.Log("Self protection: "+selfProtection.Status.UserText());
             selfProtectionTimer=new System.Threading.Timer(x=>RefreshSelfProtection(),null,1000,1000);

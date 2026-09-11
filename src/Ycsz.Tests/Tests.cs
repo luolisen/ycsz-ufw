@@ -129,6 +129,36 @@ static class Tests {
         Test("normal maintenance stop prevents tray relaunch",()=> {
             var source=new FakeSessionSource { Current=5 }; var runtime=new FakeTrayRuntime(); var supervisor=new TraySupervisor(source,runtime,null); supervisor.Tick(DateTime.UtcNow); supervisor.Stop(TrayStopReason.Maintenance); runtime.Started[0].Exited=true; supervisor.Tick(DateTime.UtcNow.AddMinutes(1)); Is(runtime.StartCount==1 && supervisor.IsStopping && runtime.Started[0].Disposed); supervisor.Dispose();
         });
+        Test("file identity preflight rejects aliases, reparse points and unreadable entries",()=> {
+            var result=SelfProtectionFilePreflight.Evaluate(new[] {
+                Observation("bin/Ycsz.exe",7,11,false,true,false),
+                Observation("data/state.db",7,12,false,true,false),
+                Observation("alias/state.db",7,12,false,true,false,2),
+                Observation("junction",7,13,true,true,true),
+                Observation("locked.dat",7,14,false,false,false)
+            });
+            Is(!result.Passed && !result.MappingWritebackConditionMet && result.ScannedEntries==5 && result.Issues.Count>=3);
+        });
+        Test("file identity preflight passes only unique readable identities",()=> {
+            var result=SelfProtectionFilePreflight.Evaluate(new[] {
+                Observation("bin/Ycsz.exe",7,11,false,true,false),
+                Observation("data",7,12,false,true,true),
+                Observation("data/state.db",7,13,false,true,false)
+            });
+            Is(result.Passed && result.MappingWritebackConditionMet && result.ScannedEntries==3 && result.Issues.Count==0);
+        });
+        Test("activation preflight fails before transport and does not claim mapped-write protection",()=> {
+            var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
+            var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full });
+            var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromMinutes(5),()=>SelfProtectionFilePreflight.Evaluate(new[] { Observation("alias",7,12,false,true,false),Observation("state",7,12,false,true,false) }));
+            Is(!coordinator.Activate(DateTime.UtcNow) && transport.Requests.Count==0 && coordinator.Status.State==SelfProtectionState.Failed && !coordinator.Status.MappingWritebackConditionMet);
+        });
+        Test("successful activation records the mapped-write precondition separately",()=> {
+            var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
+            var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full });
+            var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromMinutes(5),()=>SelfProtectionFilePreflight.Evaluate(new[] { Observation("state",7,12,false,true,false) }));
+            Is(coordinator.Activate(DateTime.UtcNow) && transport.Requests.Count==1 && coordinator.Status.MappingWritebackConditionMet && coordinator.Status.UserText().IndexOf("映射写回条件未满足",StringComparison.Ordinal)<0);
+        });
         Test("self protection never reports active when driver is unavailable",()=> {
             var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=false,DriverLoaded=false,Error="未加载" });
             var coordinator=new SelfProtectionCoordinator(transport,Identity, (session,op)=>true, TimeSpan.FromMinutes(5));
@@ -249,6 +279,8 @@ static class Tests {
         put(104,System.Text.Encoding.Unicode.GetBytes("kernel-image")); put(1128,System.Text.Encoding.Unicode.GetBytes("kernel-root")); put(2152,System.Text.Encoding.Unicode.GetBytes("kernel-data-root")); return bytes;
     }
     static byte[] HexBytes(string value) { var result=new byte[value.Length/2]; for(int i=0;i<result.Length;i++) result[i]=Convert.ToByte(value.Substring(i*2,2),16); return result; }
+    static SelfProtectionFileIdentityObservation Observation(string path,ulong volume,ulong fileIndex,bool reparse,bool readable,bool directory) { return Observation(path,volume,fileIndex,reparse,readable,directory,1); }
+    static SelfProtectionFileIdentityObservation Observation(string path,ulong volume,ulong fileIndex,bool reparse,bool readable,bool directory,uint linkCount) { return new SelfProtectionFileIdentityObservation { Path=path,VolumeSerial=volume,FileIndex=fileIndex,LinkCount=linkCount,ReparsePoint=reparse,Readable=readable,IsDirectory=directory }; }
     static ProtectionIdentity Identity() { return new ProtectionIdentity { ServiceName=ProtectionIdentity.ExpectedServiceName,ProcessId=1234,SessionId=0,StartTimeUtcFileTime=DateTime.UtcNow.ToFileTimeUtc(),ImagePath=Path.Combine(Path.GetTempPath(),"Ycsz.exe"),ImageSha256=new string('a',64),InstanceNonce=new string('b',32) }; }
     static ProtectionIdentity TrayIdentity() { return new ProtectionIdentity { ServiceName=ProtectionIdentity.ExpectedServiceName,ProcessId=5678,SessionId=7,StartTimeUtcFileTime=DateTime.UtcNow.ToFileTimeUtc(),ImagePath=Path.Combine(Path.GetTempPath(),"Ycsz.exe"),ImageSha256=new string('c',64),InstanceNonce=new string('d',32) }; }
 }

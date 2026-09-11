@@ -41,9 +41,12 @@ function Invoke-StaticChecks {
     $kernel = Join-Path $driver 'ycsz_protection.c'
     $filter = Join-Path $driver 'ycsz_minifilter.c'
     $transport = Join-Path $repo 'src\Ycsz.Core\SelfProtectionDeviceTransport.cs'
+    $core = Join-Path $repo 'src\Ycsz.Core\SelfProtection.cs'
+    $preflight = Join-Path $repo 'src\Ycsz.Core\SelfProtectionFilePreflight.cs'
     $app = Join-Path $repo 'src\Ycsz.App\Program.cs'
     $install = Join-Path $repo 'scripts\Install-Protection.ps1'
-    foreach ($path in @($protocol,$kernel,$filter,$transport,$app,$install)) {
+    $validation = Join-Path $repo 'scripts\Protection-Validation.ps1'
+    foreach ($path in @($protocol,$kernel,$filter,$transport,$core,$preflight,$app,$install,$validation)) {
         if (!(Test-Path -LiteralPath $path -PathType Leaf)) { Add-Result 'static source inventory' 'FAIL' "missing $path"; return }
     }
     $checks = @(
@@ -55,20 +58,29 @@ function Invoke-StaticChecks {
         @('trusted data root registry', $kernel, 'TrustedDataRoot'),
         @('real tray process validation', $kernel, 'PsLookupProcessByProcessId'),
         @('trusted writer gate', $kernel, 'YcpIsTrustedWriter'),
+        @('stream identity context', $filter, 'YCP_STREAM_CONTEXT'),
+        @('stream identity query', $filter, 'FileInternalInformation'),
+        @('stream context lookup', $filter, 'FltGetStreamContext'),
+        @('stream context registration', $filter, 'FltSetStreamContext'),
+        @('paging write compatibility', $filter, 'IRP_PAGING_IO'),
         @('reparse gate', $filter, 'FSCTL_SET_REPARSE_POINT'),
         @('v2 user ABI', $transport, 'StateDataRoot'),
+        @('activation identity preflight', $preflight, 'GetFileInformationByHandle'),
+        @('mapped-write status is explicit', $core, 'MappingWritebackConditionMet'),
         @('actual activation probe', $app, '--protection-status'),
         @('CAT member validation', $install, 'Assert-ProtectionCatalogMembers'),
-        @('rollback data root', $install, 'oldDataRoot')
+        @('rollback data root', $install, 'oldDataRoot'),
+        @('package delta rollback', $validation, 'New-ProtectionRollbackPlan'),
+        @('package snapshot rollback', $install, 'Get-ProtectionPackageSnapshot')
     )
     foreach ($check in $checks) {
         if (Test-Contains $check[1] $check[2]) { Add-Result $check[0] 'PASS' $check[2] }
         else { Add-Result $check[0] 'FAIL' "missing $($check[2])" }
     }
-    Add-Result 'preexisting writable mappings' 'BLOCKED' 'Requires stream identity and safe cache-write handling; unsupported FSFilter denial removed.'
+    Add-Result 'preexisting writable mappings' 'BLOCKED' 'Identity is tracked for existing handles, but arbitrary Cache Manager mapped-write denial is intentionally not claimed.'
     Add-Result 'dynamic driver load' 'BLOCKED' 'Static mode does not load the unsigned driver.'
     Add-Result 'signed CAT and unique altitude' 'BLOCKED' 'Requires an isolated Windows target with production signing and an assigned altitude.'
-    Add-Result 'termination/mapping/link runtime evidence' 'BLOCKED' 'Static mode records the required dynamic matrix but does not claim runtime blocking.'
+    Add-Result 'termination/mapping/link runtime evidence' 'BLOCKED' 'Static mode records the dynamic matrix; mapped-write compatibility remains an explicit unproven condition.'
 }
 
 function Add-NativeDynamicType {
@@ -130,6 +142,13 @@ function Invoke-DynamicChecks {
         if (!(Test-Path -LiteralPath $candidate -PathType Leaf)) { Add-Result 'fixture files' 'BLOCKED' "Pre-create before activation: $candidate"; return }
     }
 
+    $ordinary = Join-Path ([IO.Path]::GetFullPath($FixtureRoot)) 'ordinary-unprotected.bin'
+    try {
+        [IO.File]::WriteAllText($ordinary,'ordinary fixture write')
+        Add-Result 'ordinary non-product write' 'PASS' 'An unrelated fixture path remains writable; no global unknown-path denial observed.'
+    } catch { Add-Result 'ordinary non-product write' 'FAIL' $_.Exception.Message }
+    finally { if (Test-Path -LiteralPath $ordinary) { Remove-Item -LiteralPath $ordinary -Force -ErrorAction SilentlyContinue } }
+
     foreach ($candidate in @($file,$dataFile)) {
         $stream = $null
         try {
@@ -160,7 +179,7 @@ function Invoke-DynamicChecks {
         else {
             $view = [YcszDynamicNative]::MapViewOfFile($mapping,0x0002 -bor 0x0020,0,0,[UIntPtr]4096)
             if ($view -eq [IntPtr]::Zero) { Add-Result 'writable mapping' 'PASS' ('MapViewOfFile denied: ' + [Runtime.InteropServices.Marshal]::GetLastWin32Error()) }
-            else { [Runtime.InteropServices.Marshal]::WriteByte($view,0,66); if ([YcszDynamicNative]::FlushViewOfFile($view,[UIntPtr]1)) { Add-Result 'writable mapping' 'FAIL' 'A mapped write was flushed successfully.' } else { Add-Result 'writable mapping' 'PASS' ('FlushViewOfFile denied: ' + [Runtime.InteropServices.Marshal]::GetLastWin32Error()) } }
+            else { [Runtime.InteropServices.Marshal]::WriteByte($view,0,66); if ([YcszDynamicNative]::FlushViewOfFile($view,[UIntPtr]1)) { Add-Result 'writable mapping' 'BLOCKED' 'Mapped writeback reached FlushViewOfFile; compatibility path is intentionally not denied and therefore is not claimed as protected.' } else { Add-Result 'writable mapping' 'PASS' ('FlushViewOfFile denied: ' + [Runtime.InteropServices.Marshal]::GetLastWin32Error()) } }
         }
     } catch { Add-Result 'writable mapping' 'PASS' $_.Exception.Message }
     finally {
@@ -169,6 +188,7 @@ function Invoke-DynamicChecks {
         if ($mapStream) { if ($addedRef) { try { $mapStream.SafeFileHandle.DangerousRelease() } catch {} }; $mapStream.Dispose() }
     }
 
+    Add-Result 'normal trusted service writeback' 'BLOCKED' 'This runner does not impersonate the already authenticated service writer; use the isolated service harness to prove an in-root content update and cache writeback.'
     Add-Result 'ordinary SYSTEM writer' 'BLOCKED' 'This run does not manufacture a second SYSTEM token; use the isolated service harness for that identity.'
     Add-Result 'PID/session restart' 'BLOCKED' 'Requires a real user session transition and a service-controlled tray restart; no logout or reboot is performed by this tool.'
 

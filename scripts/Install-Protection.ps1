@@ -96,15 +96,40 @@ $trustedKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\YcszProtection\Parameters
 $hadTrusted = Test-Path -LiteralPath $trustedKey
 $oldTrusted = if ($hadTrusted) { (Get-ItemProperty -LiteralPath $trustedKey -Name TrustedImagePath -ErrorAction SilentlyContinue).TrustedImagePath } else { $null }
 $oldDataRoot = if ($hadTrusted) { (Get-ItemProperty -LiteralPath $trustedKey -Name TrustedDataRoot -ErrorAction SilentlyContinue).TrustedDataRoot } else { $null }
-$driverWasRegistered = $null -ne (Get-ServiceOrNull 'YcszProtection')
+$driverService = Get-ServiceOrNull 'YcszProtection'
+$driverWasRegistered = $null -ne $driverService
 $appWasRunning = $service.Status -ne 'Stopped'
 $protectionWasRunning = $false
 $appStoppedByScript = $false
-$publishedAdded = $null
+$packagePlan = $null
+$packageMutationAttempted = $false
+$packagesAfter = @()
+$rollbackRoot = Join-Path $env:TEMP ('YcszProtectionRollback-' + [guid]::NewGuid().ToString('N'))
+$oldPackageInf = $null
 $appKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\YcszFirewall'
-$oldSidType = (Get-ItemProperty -LiteralPath $appKey -ErrorAction Stop).ServiceSidType
-$oldSidName = switch ([int]$oldSidType) { 0 { 'none' }; 1 { 'unrestricted' }; 3 { 'restricted' }; default { throw 'Unknown original service SID type; installation cannot safely roll back.' } }
-$packagesBefore = @(Get-WindowsDriver -Online -ErrorAction Stop | ForEach-Object { $_.Driver })
+$oldServiceKey = Get-ItemProperty -LiteralPath $appKey -ErrorAction Stop
+$hadOldSidType = $oldServiceKey.PSObject.Properties.Name -contains 'ServiceSidType'
+$oldSidType = if ($hadOldSidType) { [int]$oldServiceKey.ServiceSidType } else { 0 }
+$oldSidName = switch ($oldSidType) { 0 { 'none' }; 1 { 'unrestricted' }; 3 { 'restricted' }; default { throw 'Unknown original service SID type; installation cannot safely roll back.' } }
+$packagesBefore = Get-ProtectionPackageSnapshot
+$oldProtectionPackages = @($packagesBefore | Where-Object { Test-IsProtectionPackage $_ })
+if ($oldProtectionPackages.Count -gt 1) { throw 'Multiple existing YCSZ protection packages were found; refusing an ambiguous upgrade.' }
+if ($driverWasRegistered -and $oldProtectionPackages.Count -eq 0) { throw 'YcszProtection is registered without a recoverable package; refusing a dangerous upgrade.' }
+if ($oldProtectionPackages.Count -eq 1) {
+    try {
+        New-Item -ItemType Directory -Path $rollbackRoot -Force | Out-Null
+        $oldPackageName = Get-ProtectionPackageName $oldProtectionPackages[0]
+        & (Join-Path $env:WINDIR 'System32\pnputil.exe') /export-driver $oldPackageName $rollbackRoot | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "Existing protection package export failed: $LASTEXITCODE" }
+        $exportedInf = @(Get-ChildItem -LiteralPath $rollbackRoot -Filter 'YcszProtection.inf' -Recurse -File)
+        if ($exportedInf.Count -ne 1) { throw 'Existing protection package export was incomplete; refusing upgrade.' }
+        Assert-ProtectionCatalogMembers $exportedInf[0].Directory.FullName | Out-Null
+        $oldPackageInf = $exportedInf[0].FullName
+    } catch {
+        if (Test-Path -LiteralPath $rollbackRoot) { Remove-Item -LiteralPath $rollbackRoot -Recurse -Force -ErrorAction SilentlyContinue }
+        throw "Existing protection package is not recoverable; upgrade refused: $_"
+    }
+}
 $configurationTouched = $false
 
 try {
@@ -123,15 +148,22 @@ try {
     $sidOutput = (& (Join-Path $env:WINDIR 'System32\sc.exe') qsidtype YcszFirewall 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0 -or $sidOutput -notmatch 'UNRESTRICTED') { throw 'YcszFirewall service SID was not confirmed as UNRESTRICTED.' }
 
-    $pnputilOutput = & (Join-Path $env:WINDIR 'System32\pnputil.exe') /add-driver $inf /install 2>&1 | Out-String
-    $pnputilOutput | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "pnputil driver installation failed: $LASTEXITCODE" }
-    $publishedMatch = [regex]::Match($pnputilOutput,'(?im)Published Name\s*:\s*(oem[0-9]+\.inf)')
-    if ($publishedMatch.Success -and $packagesBefore -notcontains $publishedMatch.Groups[1].Value) {
-        $candidate = $publishedMatch.Groups[1].Value
-        Assert-ProtectionPackage $candidate (Get-WindowsDriver -Online -Driver $candidate -ErrorAction Stop)
-        $publishedAdded = $candidate
+    $pnputilOutput = ''
+    $pnputilExit = 0
+    $packageMutationAttempted = $true
+    try {
+        $pnputilOutput = & (Join-Path $env:WINDIR 'System32\pnputil.exe') /add-driver $inf /install 2>&1 | Out-String
+        $pnputilExit = $LASTEXITCODE
+    } catch {
+        $pnputilExit = 1
+        $pnputilOutput = $_.Exception.Message
     }
+    $pnputilOutput | Out-Host
+    # Always rescan after pnputil, including a non-zero exit: Windows can
+    # publish a package before reporting a later install-stage failure.
+    $packagesAfter = Get-ProtectionPackageSnapshot
+    $packagePlan = New-ProtectionRollbackPlan $packagesBefore $packagesAfter $driverWasRegistered $appWasRunning
+    if ($pnputilExit -ne 0) { throw "pnputil driver installation failed: $pnputilExit; package delta was recorded." }
 
     New-Item -Path $trustedKey -Force | Out-Null
     New-ItemProperty -LiteralPath $trustedKey -Name TrustedImagePath -PropertyType String -Value $ntImage -Force | Out-Null
@@ -152,10 +184,15 @@ try {
     if ((Get-Service YcszFirewall).Status -ne 'Running') { throw 'YcszFirewall did not restart after protection activation.' }
     $activation = & $image --protection-status 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) { throw "YcszFirewall is Running but v2 self-protection activation was not confirmed: $activation" }
-    Write-Output "PASS protection installed, CAT members verified, and v2 activation confirmed: $ntImage / $ntDataRoot"
+    if (Test-Path -LiteralPath $rollbackRoot) { Remove-Item -LiteralPath $rollbackRoot -Recurse -Force -ErrorAction Stop }
+    $newPackageNames = @($packagePlan.NewProtectionNames -join ',')
+    Write-Output "PASS protection installed, CAT members verified, v2 activation confirmed, package delta recorded ($newPackageNames): $ntImage / $ntDataRoot"
 } catch {
     $failure = $_
-    if (!$configurationTouched) { throw "Protection preflight/stop failed before configuration changes: $failure" }
+    if (!$configurationTouched) {
+        $backupNote = if (Test-Path -LiteralPath $rollbackRoot) { " Existing package backup was preserved at $rollbackRoot." } else { '' }
+        throw "Protection preflight/stop failed before configuration changes: $failure$backupNote"
+    }
     # Stop failure is not permission to rewrite a live driver's cached trust or
     # delete its registration. Preserve the recoverable state and report it.
     $rollbackErrors = New-Object 'System.Collections.Generic.List[string]'
@@ -182,16 +219,34 @@ try {
         if ($null -ne $oldDataRoot) { Set-ItemProperty -LiteralPath $trustedKey -Name TrustedDataRoot -Value $oldDataRoot }
         else { Remove-ItemProperty -LiteralPath $trustedKey -Name TrustedDataRoot -ErrorAction SilentlyContinue }
         Invoke-Sc @('sidtype','YcszFirewall',$oldSidName) 'Original service SID restore'
-        if ($null -ne $oldSidType) { Set-ItemProperty -LiteralPath $appKey -Name ServiceSidType -Value $oldSidType }
+        if ($hadOldSidType) { Set-ItemProperty -LiteralPath $appKey -Name ServiceSidType -Value $oldSidType }
         else { Remove-ItemProperty -LiteralPath $appKey -Name ServiceSidType -ErrorAction SilentlyContinue }
     } catch { $rollbackErrors.Add("Configuration restore failed: $_") }
-    if (!$driverWasRegistered -and $rollbackErrors.Count -eq 0) {
+    if ($packageMutationAttempted -and !$packagePlan) {
+        $packageEvidence = if (Test-Path -LiteralPath $rollbackRoot) { "old package backup preserved at $rollbackRoot" } else { 'no automatic package deletion was attempted' }
+        $rollbackErrors.Add("Package delta was not captured after pnputil; driver-store state was preserved and $packageEvidence")
+    }
+    if ($packagePlan -and $rollbackErrors.Count -eq 0) {
         try {
-            if (Get-ServiceOrNull 'YcszProtection') { Invoke-Sc @('delete','YcszProtection') 'Protection registration rollback' }
-            if ($publishedAdded) {
-                Assert-ProtectionPackage $publishedAdded (Get-WindowsDriver -Online -Driver $publishedAdded -ErrorAction Stop)
-                & (Join-Path $env:WINDIR 'System32\pnputil.exe') /delete-driver $publishedAdded /uninstall | Out-Host
-                if ($LASTEXITCODE -ne 0) { throw "Driver-store rollback failed: $LASTEXITCODE" }
+            if (!$driverWasRegistered -and (Get-ServiceOrNull 'YcszProtection')) {
+                Invoke-Sc @('delete','YcszProtection') 'Protection registration rollback'
+            }
+            foreach ($name in @($packagePlan.NewProtectionNames)) {
+                $currentPackage=Get-WindowsDriver -Online -Driver $name -ErrorAction Stop
+                Assert-ProtectionPackage $name $currentPackage
+                & (Join-Path $env:WINDIR 'System32\pnputil.exe') /delete-driver $name /uninstall | Out-Host
+                if ($LASTEXITCODE -ne 0) { throw "Driver-store rollback failed for ${name}: $LASTEXITCODE" }
+            }
+            if ($oldPackageInf) {
+                & (Join-Path $env:WINDIR 'System32\pnputil.exe') /add-driver $oldPackageInf /install | Out-Host
+                if ($LASTEXITCODE -ne 0) { throw "Old protection package restore failed: $LASTEXITCODE" }
+                $restoredPackages=Get-ProtectionPackageSnapshot
+                $restoredProtection=@($restoredPackages | Where-Object { Test-IsProtectionPackage $_ })
+                if ($restoredProtection.Count -eq 0) { throw 'Old protection package restore produced no verified YCSZ package.' }
+            }
+            $afterRollback=Get-ProtectionPackageSnapshot
+            if (!$oldPackageInf -and @($afterRollback | Where-Object { Test-IsProtectionPackage $_ }).Count -ne 0) {
+                throw 'New YCSZ package remained after rollback.'
             }
         } catch { $rollbackErrors.Add("Package restore failed: $_") }
     }
@@ -199,6 +254,7 @@ try {
         try { Start-Service YcszFirewall -ErrorAction Stop }
         catch { $rollbackErrors.Add("Application restart failed: $_") }
     }
-    if ($rollbackErrors.Count) { throw "Installation failed: $failure. Rollback incomplete: $($rollbackErrors -join '; ')" }
+    if ($rollbackErrors.Count) { throw "Installation failed: $failure. Rollback incomplete: $($rollbackErrors -join '; '). Preserve rollback evidence at $rollbackRoot" }
+    if (Test-Path -LiteralPath $rollbackRoot) { Remove-Item -LiteralPath $rollbackRoot -Recurse -Force -ErrorAction SilentlyContinue }
     throw "Installation failed; stopped-state configuration rollback completed: $failure"
 }

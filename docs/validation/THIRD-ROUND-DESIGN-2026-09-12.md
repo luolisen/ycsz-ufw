@@ -6,7 +6,7 @@
 
 1. 只把已确认属于 YCSZ 安装根或 ProgramData 根的文件标记为产品对象；未知路径、名称解析失败和普通系统缓存请求继续放行，不使用 `STATUS_ACCESS_DENIED` 伪造拒绝。
 2. 通过 Filter Manager stream context 绑定文件对象的稳定流身份；context 保存 `FILE_INTERNAL_INFORMATION.IndexNumber` 和产品标记。路径仅用于首次确认命名空间，后续已有句柄、别名和重命名后的同一流优先使用 context。
-3. 激活前由服务执行只读 preflight：遍历两个根，拒绝根/子项重解析点、无法读取身份的项和同一卷文件身份对应多个产品路径（硬链接/别名）。失败返回逐项原因，不能进入 Active。
+3. 激活前由服务执行只读 preflight：遍历两个根，拒绝根/子项重解析点、无法读取身份的项、文件硬链接计数大于一和同一卷文件身份对应多个产品路径（硬链接/别名）。失败返回逐项原因，不能进入 Active。
 4. 新的重命名/硬链接/重解析点只允许保持在已确认产品命名空间内；可信服务可更新文件内容，但不能借可信写入者创建逃逸别名。未知目录的普通重解析操作不受影响。
 5. `IRP_MJ_ACQUIRE_FOR_SECTION_SYNCHRONIZATION`、paging write、Cache Manager/Modified Page Writer 回调不作为拒绝入口；可写映射只有在激活 preflight 通过、目标流已有产品 context、请求属于合法服务写回且目标仍在产品命名空间时才报告启用，否则状态明确报告 `MappingProtectionUnavailable`，不声称映射阻断。
 
@@ -19,7 +19,7 @@
 
 ## 3. 用户态激活 preflight 与可写映射状态
 
-- 新增独立的 `SelfProtectionFilePreflight`（Windows 句柄身份 API）和结果对象：根存在性、重解析项、无法读取项、重复 `(VolumeSerial, FileIndex)`、扫描计数；结果可序列化到日志/状态。
+- 新增独立的 `SelfProtectionFilePreflight`（Windows 句柄身份 API）和结果对象：根存在性、重解析项、无法读取项、硬链接计数、重复 `(VolumeSerial, FileIndex)`、扫描计数；结果可序列化到日志/状态。
 - `SelfProtectionCoordinator.Activate` 在发送激活 IOCTL 前执行 preflight；失败状态为 Failed/Unavailable，保留逐项错误，绝不调用 Activate。已有四参数构造器保持兼容，生产 HostService 注入真实 preflight，测试注入 fixture preflight。
 - `YCP_STATUS`/用户态状态新增只读映射启用条件字段或能力位；只有 preflight 通过且服务写回路径满足条件才报告映射能力。内核不通过缓存回调拒绝合法后台写回。
 - 动态工具覆盖：非产品文件正常写、产品已有句柄写失败、别名/硬链接/重解析逃逸失败、产品根内合法服务写回成功；不能制造身份时输出 BLOCKED。

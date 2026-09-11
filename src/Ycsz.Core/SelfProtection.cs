@@ -142,6 +142,9 @@ namespace Ycsz {
     public sealed class SelfProtectionStatus {
         public SelfProtectionState State;
         public bool DriverLoaded;
+        // This is an activation/writeback precondition, not a claim that the
+        // minifilter can deny arbitrary Cache Manager mapped writes.
+        public bool MappingWritebackConditionMet;
         public SelfProtectionCapability Capabilities;
         public string Failure;
         public string MaintenanceLeaseId;
@@ -152,10 +155,10 @@ namespace Ycsz {
         public bool ServiceStopProtectionActive { get { return (Capabilities&SelfProtectionCapability.ServiceStop)!=0; } }
 
         public static SelfProtectionStatus Unavailable(string reason) { return new SelfProtectionStatus { State=SelfProtectionState.Unavailable,Failure=reason??"驱动未加载" }; }
-        public SelfProtectionStatus Copy() { return new SelfProtectionStatus { State=State,DriverLoaded=DriverLoaded,Capabilities=Capabilities,Failure=Failure,MaintenanceLeaseId=MaintenanceLeaseId,MaintenanceUntilUtc=MaintenanceUntilUtc }; }
+        public SelfProtectionStatus Copy() { return new SelfProtectionStatus { State=State,DriverLoaded=DriverLoaded,MappingWritebackConditionMet=MappingWritebackConditionMet,Capabilities=Capabilities,Failure=Failure,MaintenanceLeaseId=MaintenanceLeaseId,MaintenanceUntilUtc=MaintenanceUntilUtc }; }
         public string UserText() {
-            if(State==SelfProtectionState.Active) return "内核自保护已启用（进程句柄/文件过滤；服务停止需认证维护）";
-            if(State==SelfProtectionState.Maintenance) return "内核自保护维护窗口已授权（最长 15 分钟；安装目录与 ProgramData 文件过滤仍在）";
+            if(State==SelfProtectionState.Active) return "内核自保护已启用（进程句柄/文件过滤；服务停止需认证维护）"+(MappingWritebackConditionMet?"":"；可写映射写回条件未满足");
+            if(State==SelfProtectionState.Maintenance) return "内核自保护维护窗口已授权（最长 15 分钟；安装目录与 ProgramData 文件过滤仍在）"+(MappingWritebackConditionMet?"":"；可写映射写回条件未满足");
             if(State==SelfProtectionState.Degraded) return "内核自保护不完整，未满足全部保护能力";
             if(State==SelfProtectionState.Starting) return "内核自保护正在初始化";
             if(State==SelfProtectionState.Failed) return "内核自保护未启用："+(Failure??"驱动通信失败");
@@ -172,22 +175,30 @@ namespace Ycsz {
         // handled by the authenticated service lifecycle, while the driver reports
         // only the two capabilities it actually implements.
         static readonly SelfProtectionCapability Required=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
-        readonly object sync=new object(); readonly ISelfProtectionTransport transport; readonly Func<ProtectionIdentity> identityFactory; readonly Func<string,SelfProtectionOperation,bool> authorizer; readonly TimeSpan maintenanceWindow; string maintenanceSession;
+        readonly object sync=new object(); readonly ISelfProtectionTransport transport; readonly Func<ProtectionIdentity> identityFactory; readonly Func<string,SelfProtectionOperation,bool> authorizer; readonly Func<SelfProtectionPreflightResult> preflight; readonly TimeSpan maintenanceWindow; string maintenanceSession;
         ProtectionIdentity registeredIdentity;
         ProtectionIdentity registeredTray;
         SelfProtectionStatus status=SelfProtectionStatus.Unavailable("驱动未构建或未加载");
 
-        public SelfProtectionCoordinator(ISelfProtectionTransport transport,Func<ProtectionIdentity> identityFactory,Func<string,SelfProtectionOperation,bool> authorizer,TimeSpan maintenanceWindow) {
+        public SelfProtectionCoordinator(ISelfProtectionTransport transport,Func<ProtectionIdentity> identityFactory,Func<string,SelfProtectionOperation,bool> authorizer,TimeSpan maintenanceWindow) : this(transport,identityFactory,authorizer,maintenanceWindow,null) {}
+        public SelfProtectionCoordinator(ISelfProtectionTransport transport,Func<ProtectionIdentity> identityFactory,Func<string,SelfProtectionOperation,bool> authorizer,TimeSpan maintenanceWindow,Func<SelfProtectionPreflightResult> preflight) {
             if(transport==null) throw new ArgumentNullException("transport"); if(identityFactory==null) throw new ArgumentNullException("identityFactory"); if(authorizer==null) throw new ArgumentNullException("authorizer");
             if(maintenanceWindow<=TimeSpan.Zero || maintenanceWindow>TimeSpan.FromMinutes(15)) throw new ArgumentOutOfRangeException("maintenanceWindow");
-            this.transport=transport; this.identityFactory=identityFactory; this.authorizer=authorizer; this.maintenanceWindow=maintenanceWindow;
+            this.transport=transport; this.identityFactory=identityFactory; this.authorizer=authorizer; this.maintenanceWindow=maintenanceWindow; this.preflight=preflight;
         }
         public SelfProtectionStatus Status { get { lock(sync) return status.Copy(); } }
 
         public bool Activate(DateTime utcNow) {
             lock(sync) {
                 status.State=SelfProtectionState.Starting; status.Failure=null;
-                try { registeredIdentity=identityFactory(); registeredTray=null; return ApplyReply(transport.Send(SelfProtectionRequest.Create(SelfProtectionOperation.Activate,registeredIdentity,null,DateTime.MinValue,utcNow))); }
+                try {
+                    SelfProtectionPreflightResult result=preflight==null?null:preflight();
+                    if(preflight!=null && (result==null || !result.Passed)) { status.MappingWritebackConditionMet=false; Fail(result==null?"文件身份 preflight 未返回结果":result.Summary); return false; }
+                    registeredIdentity=identityFactory(); registeredTray=null;
+                    bool accepted=ApplyReply(transport.Send(SelfProtectionRequest.Create(SelfProtectionOperation.Activate,registeredIdentity,null,DateTime.MinValue,utcNow)));
+                    status.MappingWritebackConditionMet=accepted && result!=null && result.MappingWritebackConditionMet;
+                    return accepted;
+                }
                 catch(Exception e) { Fail(e.Message); return false; }
             }
         }
@@ -289,6 +300,6 @@ namespace Ycsz {
             status.DriverLoaded=true; status.Capabilities=reply.Capabilities; status.State=CapabilitiesComplete()?SelfProtectionState.Active:SelfProtectionState.Degraded; status.MaintenanceLeaseId=null; status.MaintenanceUntilUtc=DateTime.MinValue; maintenanceSession=null; status.Failure=null; return status.State==SelfProtectionState.Active;
         }
         bool CapabilitiesComplete() { return status.DriverLoaded && (status.Capabilities&Required)==Required; }
-        void Fail(string error) { status.State=SelfProtectionState.Failed; status.DriverLoaded=false; status.Capabilities=SelfProtectionCapability.None; status.Failure=error??"自保护失败"; /* Retain an uncertain lease so expiry and explicit exit can retry. */ }
+        void Fail(string error) { status.State=SelfProtectionState.Failed; status.DriverLoaded=false; status.MappingWritebackConditionMet=false; status.Capabilities=SelfProtectionCapability.None; status.Failure=error??"自保护失败"; /* Retain an uncertain lease so expiry and explicit exit can retry. */ }
     }
 }
