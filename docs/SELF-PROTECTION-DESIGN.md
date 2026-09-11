@@ -1,12 +1,12 @@
 # YCSZ 软件自保护方案
 
-状态：驱动源码、固定协议和用户态维护路径已实现；尚未完成 WDK 编译、签名、加载或隔离 Windows 动态验收。2026-09-12。
+状态：驱动源码、固定协议和用户态维护路径已实现；已在独立 Windows CI 完成 WDK Release 编译、INF 校验和 CAT 构建，但尚未签名、加载或完成隔离 Windows 动态验收。2026-09-12。
 
 ## 约束和现状
 
 用户要求保留现有 Windows 账户、权限、系统策略、联想智能云教室及网络环境，不通过降低学生账户权限实现验收。本轮只修改仓库文档，不操作生产端环境。先前 STU01 验证中的“改为标准账户”建议不再作为实施方案。
 
-现有 Ycsz.exe 同时承载 UI 与 LocalSystem 服务；Program.cs 的 HostService 接受 Stop，安装器服务 ACL 允许管理员停止服务，程序目录允许 Administrators 完全控制。仓库尚无内核驱动工程。因此 SYSTEM、目录隐藏和服务异常重启均不足以宣称满足当前管理员账户下的自保护要求。
+现有 Ycsz.exe 同时承载 UI 与 LocalSystem 服务；Program.cs 的 HostService 接受 Stop，安装器服务 ACL 允许管理员停止服务，程序目录允许 Administrators 完全控制。仓库已有 minifilter/ObCallback 驱动工程，但尚未在生产或签名靶场加载。因此 SYSTEM、目录隐藏和服务异常重启均不足以宣称满足当前管理员账户下的自保护要求。
 
 ## 官方参考与适用边界
 
@@ -54,7 +54,7 @@
 - `src/Ycsz.Core/SelfProtection.cs` 已实现用户态协议模型和维护状态机：固定服务/映像身份、PID 与启动时间字段、映像 SHA-256、实例 nonce、三项能力状态、有限维护租约及过期自动关闭。协议不传管理密码，也不接受任意进程名或任意 PID 作为保护授权。
 - `src/Ycsz.App/Program.cs` 会把当前状态明确显示为“内核自保护未启用：驱动未构建或未加载”；托盘恢复、SCM 重启和网络进程扫描不会被写成拒绝终止的证据。
 - `src/Ycsz.Tests/Tests.cs` 覆盖驱动不可用、能力不完整、伪造身份、维护授权、过期关闭和可逆恢复。该部分是可运行的用户态状态机测试，不是驱动加载测试。
-- 尚未添加默认安装的驱动。真实 Ob callbacks/minifilter 工程仍需 WDK、驱动验证、正式签名和隔离 Windows 靶场；在这些条件具备前不得安装、加载或发布驱动。
+- 尚未添加默认安装的驱动。真实 Ob callbacks/minifilter 工程已通过独立 Windows CI 的 WDK/InfVerif 构建门禁，但仍需驱动验证、正式签名和隔离 Windows 靶场；在这些条件具备前不得安装、加载或发布驱动。
 
 ## 2026-09-12 实现更新
 
@@ -62,4 +62,10 @@
 - `src/Ycsz.Core/SelfProtectionDeviceTransport.cs` 对接固定 IOCTL 和 x64 结构布局；`HostService` 在启动时尝试激活当前固定安装路径的实际服务实例，缺少设备时保持失败/未启用状态。`src/Ycsz.App/Ui.cs` 通过已登录本地 IPC 暴露限时维护入口，服务侧在完整进程/文件能力激活时暂不接受普通 SCM Stop。
 - 驱动未实现 `ServiceStop` 能力位；SCM 停止保护依赖已认证的服务生命周期门禁，必须在隔离 Windows 上验证 SCM 行为，不能把 `CanStop=false` 或异常恢复当作驱动拒绝终止证据。
 - 当前协议只固定一个安装根目录，因此 `ProgramData\\YcszFirewall` 的配置、日志和基线仍依赖 ACL/应用恢复，不属于本轮 minifilter 已覆盖的防删除范围。
-- 用户态 mcs/csc 兼容构建与 57/57 隔离测试已通过；本机无 WDK，故驱动仍未编译、签名、安装或加载。INF 的 altitude `385200.1234` 是占位值，正式运行前必须申请唯一 altitude、生成 CAT 并使用适配目标系统的正式签名。
+- 用户态 mcs/csc 兼容构建与 63/63 隔离测试已通过；Windows CI 已完成 x64 WDK Release 编译、stamped INF、CAT 和 InfVerif 校验，但产物保持 unsigned，未安装或加载。INF 的 altitude `385200.1234` 是占位值，正式运行前必须申请唯一 altitude、生成 CAT 并使用适配目标系统的正式签名。
+
+## 2026-09-12 Windows CI 复审
+
+- 开发分支 `codex/luna-full-delivery-20260912` 的 [Actions 运行 34641414586](https://github.com/luolisen/ycsz-ufw/actions/runs/34641414586) 在 `windows-2025-vs2026` runner 通过固定 WDK/SDK `10.0.28000.2526` 完成 `WindowsKernelModeDriver10.0`、Universal/WDM、x64 构建；`InfVerif` 对 stamped INF 报告 `INF is VALID`。
+- CI 同时通过 63/63 用户态回归、Windows PowerShell 5.1 解析和静态门禁、WFP 事务回滚、服务恢复/持久化安全 fixture；这些是构建与受控测试证据，不是签名驱动已加载后的阻断证据。
+- 仍未满足生产门槛：正式签名和唯一 altitude，隔离 Windows 的驱动加载、原 PID 保持的终止/挂起阻断、删除/重命名/截断/映射写入边界、强制卸载竞态、重启与联想过滤驱动兼容性。默认安装器仍明确不包含该未验收驱动。

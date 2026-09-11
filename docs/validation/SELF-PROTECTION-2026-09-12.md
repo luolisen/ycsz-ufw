@@ -17,13 +17,14 @@
 | --- | --- |
 | Mono C# Core 编译（临时目录） | 通过 |
 | Mono C# App 编译（临时目录） | 通过 |
-| Mono C# Tests 编译并执行 | 57/57 通过 |
+| Mono C# Tests 编译并执行 | 63/63 通过 |
 | 协议 x64 固定布局（头部、身份、激活、租约、状态） | 通过，16/1088/2128/40/2152 字节 |
 | `bash -n scripts/build.sh` | 通过 |
 | `git diff --check` | 通过 |
-| WDK C 编译 | 未执行：当前 macOS 没有 WDK/Visual Studio |
-| 驱动签名、安装、加载、重启、动态阻断 | 未执行：没有隔离 Windows 靶场 |
-| PowerShell 解析器执行 | 未执行：当前环境没有 `pwsh` |
+| WDK C 编译 | Windows CI 通过：Release、Universal/WDM、x64，生成 SYS/INF/CAT |
+| 驱动签名、安装、加载、重启、动态阻断 | 未执行：CI 产物保持 unsigned，未连接生产或签名靶场 |
+| PowerShell 解析器执行 | Windows CI 的 Windows PowerShell 5.1 通过，全部脚本与静态门禁通过 |
+| InfVerif | Windows CI 通过：stamped INF 报告 `INF is VALID` |
 
 ## Windows 待验收矩阵
 
@@ -36,7 +37,7 @@
 5. 服务异常退出后 SCM 恢复；新服务实例重新绑定，旧 PID/创建时间不能继续获得维护权限。
 6. 映射写入、内核请求、硬链接和重解析点、注销/重启、联想同版本镜像兼容性；任何未覆盖路径单独记录，不能扩大成功结论。
 
-当时结论仅覆盖该批源码与用户态回归；后续复审发现下列未闭环问题。驱动仍处于“未 WDK 编译/未签名/未加载/未动态验收”，不能作为生产自保护已通过的证据。
+早期结论仅覆盖 CI 之前的源码与用户态回归；后续 Windows CI 已关闭 WDK 编译、INF 校验和脚本门禁，但下列生产验收缺口仍然存在。驱动保持未签名、未安装、未加载、未动态验收，不能作为生产自保护已通过的证据。
 
 范围缺口：本轮固定协议只保护包含 `Ycsz.exe` 的安装目录；`ProgramData\YcszFirewall` 配置、日志和基线尚未纳入 minifilter 根目录，仍依赖 ACL 与应用恢复逻辑。
 本轮 Ob 目标是核心 LocalSystem 服务实例；交互托盘未登记为第二个受保护进程，托盘监督恢复不作为拒绝终止证据。
@@ -98,5 +99,12 @@
 - 修正 Windows 静态脚本对旧 CanStop 写法及文件 CLEANUP 拦截的过时要求。控制设备 CLEANUP 与 minifilter 文件 CLEANUP 不同，前者只做生命周期成功响应，未恢复删除清理拦截。
 - 新增 `python3 scripts/test-driver-control.py`，直接提取两段生产 C 函数，用便携桩测试连接、授权过期、重复卸载和异常引用条件。编译开启 Wall/Wextra/Werror，5 组场景通过；输出见 `driver-control-lifecycle-results.txt`。桩不模拟 Windows I/O manager、IRQL、多线程调度或真实卸载，不是 WDK 编译证据。
 - INF GUID 与工程 XML 静态检查通过，git diff --check 通过；未改动用户态代码，未重复跑 61 项旧回归。PowerShell 门禁因本机无 pwsh 未执行。
+
+## Windows CI 复审（2026-09-12，开发分支）
+
+- 分支 `codex/luna-full-delivery-20260912`，提交 `a683f7d`；[GitHub Actions 运行 34641414586](https://github.com/luolisen/ycsz-ufw/actions/runs/34641414586) 在 `windows-2025-vs2026` runner 完成。
+- 固定 Microsoft WDK/SDK NuGet `10.0.28000.2526` 的 Release x64 驱动构建通过，工具链生成 `YcszProtection.sys`、stamped `YcszProtection.inf` 和 CAT；独立 `InfVerif /w /v` 输出 `INF is VALID`。
+- 同一运行通过用户态 `63/63` 回归、TLS `2/2`、合成网络 `9/9`、Windows PowerShell 5.1 脚本解析与静态门禁、WFP 原生事务回滚验证，以及 disposable Windows 安全集成的 `1 + 32 + 3` 项检查（含服务恢复与设备持久化）。
+- 该 CI 只验证 unsigned 构建包和可恢复的测试 fixture；没有安装/加载驱动，没有正式签名、唯一 altitude、强制终止/挂起阻断、文件删除/重命名/映射写入或重启后 minifilter 动态证据。安全集成日志明确未测试客户端 WFP/网络强制，因此不能扩大成功结论。
 
 核对依据：微软 [CDO 控制设备卸载示例](https://github.com/microsoft/Windows-driver-samples/blob/main/filesys/miniFilter/cdo/CdoInit.c)、[CDO 连接生命周期](https://github.com/microsoft/Windows-driver-samples/blob/main/filesys/miniFilter/cdo/CdoOperations.c)、[Minifilter INF 文档](https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/creating-an-inf-file-for-a-minifilter-driver)。正式安装配置、WDK/InfVerif、签名/altitude、强制卸载及隔离 Windows 验收仍待完成。没有操作生产机器或重启。
