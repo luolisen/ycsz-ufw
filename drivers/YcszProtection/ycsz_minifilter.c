@@ -32,26 +32,25 @@ YcpIsProtectedSetInformationClass(
     _In_ FILE_INFORMATION_CLASS InformationClass
     )
 {
-    switch (InformationClass) {
-    case FileDispositionInformation:
-    case FileRenameInformation:
-    case FileLinkInformation:
-    case FileEndOfFileInformation:
-    case FileAllocationInformation:
-    case FileValidDataLengthInformation:
-    case FileReplaceCompletionInformation:
+    if (InformationClass == FileDispositionInformation ||
+        InformationClass == FileRenameInformation ||
+        InformationClass == FileLinkInformation ||
+        InformationClass == FileEndOfFileInformation ||
+        InformationClass == FileAllocationInformation ||
+        InformationClass == FileValidDataLengthInformation ||
+        InformationClass == FileReplaceCompletionInformation) {
         return TRUE;
+    }
 
 #if (NTDDI_VERSION >= NTDDI_WIN10)
-    case FileDispositionInformationEx:
-    case FileRenameInformationEx:
-    case FileLinkInformationEx:
+    if (InformationClass == FileDispositionInformationEx ||
+        InformationClass == FileRenameInformationEx ||
+        InformationClass == FileLinkInformationEx) {
         return TRUE;
+    }
 #endif
 
-    default:
-        return FALSE;
-    }
+    return FALSE;
 }
 
 static BOOLEAN

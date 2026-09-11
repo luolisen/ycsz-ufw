@@ -2,6 +2,34 @@
 #include <ntstrsafe.h>
 #include <wdmsec.h>
 
+#ifndef SE_GROUP_ENABLED
+#define SE_GROUP_ENABLED ((ULONG)0x00000004L)
+#endif
+
+#ifndef SE_GROUP_USE_FOR_DENY_ONLY
+#define SE_GROUP_USE_FOR_DENY_ONLY ((ULONG)0x00000010L)
+#endif
+
+#ifndef PROCESS_TERMINATE
+#define PROCESS_TERMINATE ((ACCESS_MASK)0x0001)
+#endif
+
+#ifndef PROCESS_SUSPEND_RESUME
+#define PROCESS_SUSPEND_RESUME ((ACCESS_MASK)0x0800)
+#endif
+
+#ifndef PROCESS_SET_INFORMATION
+#define PROCESS_SET_INFORMATION ((ACCESS_MASK)0x0200)
+#endif
+
+#ifndef PROCESS_VM_WRITE
+#define PROCESS_VM_WRITE ((ACCESS_MASK)0x0020)
+#endif
+
+#ifndef PROCESS_VM_OPERATION
+#define PROCESS_VM_OPERATION ((ACCESS_MASK)0x0008)
+#endif
+
 C_ASSERT(sizeof(WCHAR) == 2);
 C_ASSERT(sizeof(YCP_CONTROL_HEADER) == 16);
 C_ASSERT(sizeof(YCP_PROCESS_IDENTITY) == 1088);
@@ -401,12 +429,15 @@ YcpHasServiceIdentity(_In_ PEPROCESS Caller)
     PACCESS_TOKEN token;
     PTOKEN_GROUPS groups = NULL;
     PTOKEN_USER user = NULL;
+    PULONG sessionId = NULL;
     BOOLEAN allowed = FALSE;
     ULONG index;
     static const UCHAR systemSid[] = { 1,1,0,0,0,0,0,5,18,0,0,0 };
-    if (PsGetProcessSessionId(Caller) != 0) return FALSE;
     token = PsReferencePrimaryToken(Caller);
-    if (NT_SUCCESS(SeQueryInformationToken(token, TokenUser, (PVOID *)&user)) &&
+    if (token == NULL) return FALSE;
+    if (NT_SUCCESS(SeQueryInformationToken(token, TokenSessionId, (PVOID *)&sessionId)) &&
+        sessionId != NULL && *sessionId == 0 &&
+        NT_SUCCESS(SeQueryInformationToken(token, TokenUser, (PVOID *)&user)) &&
         RtlEqualSid(user->User.Sid, (PSID)systemSid) &&
         NT_SUCCESS(SeQueryInformationToken(token, TokenGroups, (PVOID *)&groups))) {
         for (index = 0; index < groups->GroupCount; ++index) {
@@ -418,6 +449,7 @@ YcpHasServiceIdentity(_In_ PEPROCESS Caller)
             }
         }
     }
+    if (sessionId != NULL) ExFreePool(sessionId);
     if (groups != NULL) ExFreePool(groups);
     if (user != NULL) ExFreePool(user);
     PsDereferencePrimaryToken(token);
