@@ -45,7 +45,11 @@ jobs:
       - name: Run InfVerif against the source INF
         shell: powershell
         run: |
-          $infverif = Get-ChildItem "$env:ProgramFiles(x86)\Windows Kits\10\Tools" -Filter InfVerif.exe -Recurse | Sort-Object FullName -Descending | Select-Object -First 1
+          $toolRoots = @(
+            (Join-Path $env:GITHUB_WORKSPACE 'packages'),
+            (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Tools')
+          ) | Where-Object { Test-Path $_ }
+          $infverif = Get-ChildItem $toolRoots -Filter InfVerif.exe -Recurse | Sort-Object FullName -Descending | Select-Object -First 1
           if (!$infverif) { throw 'InfVerif.exe was not found on the WDK runner.' }
           & $infverif.FullName /w /v "$env:GITHUB_WORKSPACE\drivers\YcszProtection\YcszProtection.inf" | Tee-Object artifacts/infverif-results-windows.txt
           if ($LASTEXITCODE -ne 0) { throw "InfVerif failed with exit code $LASTEXITCODE" }
