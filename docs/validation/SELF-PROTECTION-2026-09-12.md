@@ -166,4 +166,5 @@
 - 初始化态只冻结已确认双根及严格父级的命名空间变化；未知路径、普通非命名空间 I/O、section 同步以及 paging/cache 写入不转成全局拒绝。可信服务扫描的 stream 标记失败计入驱动失败计数，Commit 不能越过该计数。
 - 本地临时目录以 `mcs -sdk:4.5 -warnaserror` 编译 Core/App/Tests，C# 回归为 `73/73`；`python3 scripts/test-driver-control.py` 的原有控制/stream/pre-create/namespace 桩和新增初始化屏障桩均通过；`git diff --check` 通过。该结果不等于 WDK 编译或 Windows 动态证据。
 
-第四轮仍明确 BLOCKED：本机没有 Windows WDK/PowerShell，尚未获得本轮真实 Windows CI 运行；没有正式签名、唯一 altitude、安装/加载 unsigned 驱动、强制终止/挂起、已有句柄/映射/硬链接/重解析点动态阻断或重启后证据。没有生产驱动安装、加载、重启、注销、关机、账户/网络/Lenovo/SecureBoot/HVCI 变更。
+- 本轮真实 Windows CI 已完成：分支 `codex/luna-full-delivery-20260912` 的实现提交 `b9f96f3` 对应 [GitHub Actions 运行 34659582962](https://github.com/luolisen/ycsz-ufw/actions/runs/34659582962)，运行时长约 5 分 18 秒并成功。`windows-2025-vs2026` runner 的 WDK Release x64 驱动/INF 构建、`InfVerif`、C# 编译/测试/打包、Windows PowerShell 5.1 解析与静态门禁、驱动静态门禁、维护输入校验、net48、WFP 和隔离 Windows 安全集成步骤均通过。
+- 第四轮仍明确 BLOCKED：没有正式签名、唯一 altitude、安装/加载 unsigned 驱动、强制终止/挂起、已有句柄/映射/硬链接/重解析点动态阻断或重启后证据。没有生产驱动安装、加载、重启、注销、关机、账户/网络/Lenovo/SecureBoot/HVCI 变更。
