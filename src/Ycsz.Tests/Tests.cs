@@ -33,7 +33,7 @@ static class Tests {
         Test("WFP GUID constants valid",()=> { Is(Wfp.ProviderKey!=Guid.Empty); Is(Wfp.SublayerKey!=Guid.Empty); });
         Test("WFP x64 ABI sizes",()=> { Is(IntPtr.Size==8); Is(Marshal.SizeOf(typeof(Wfp.Value))==16); Is(Marshal.SizeOf(typeof(Wfp.Condition))==40); Is(Marshal.SizeOf(typeof(Wfp.Filter))==200); Is(Marshal.SizeOf(typeof(Wfp.Sublayer))==72); Is(Marshal.SizeOf(typeof(Wfp.Provider))==64); });
         Test("WFP critical x64 offsets",()=> { Is(Marshal.OffsetOf(typeof(Wfp.Filter),"Action").ToInt32()==128); Is(Marshal.OffsetOf(typeof(Wfp.Filter),"Context").ToInt32()==152); Is(Marshal.OffsetOf(typeof(Wfp.Filter),"Id").ToInt32()==176); });
-        Test("self protection IOCTL ABI stays fixed",()=> { Is(WindowsSelfProtectionTransport.ControlHeaderSize==16); Is(WindowsSelfProtectionTransport.ProcessIdentitySize==1088); Is(WindowsSelfProtectionTransport.ActivateRequestSize==3152); Is(WindowsSelfProtectionTransport.TrayRequestSize==1104); Is(WindowsSelfProtectionTransport.MaintenanceRequestSize==40); Is(WindowsSelfProtectionTransport.UnloadRequestSize==32); Is(WindowsSelfProtectionTransport.StatusSize==4264); Is(WindowsSelfProtectionTransport.ActivateIoctl==0x8000e000u); Is(WindowsSelfProtectionTransport.EnterMaintenanceIoctl==0x8000e004u); Is(WindowsSelfProtectionTransport.ExitMaintenanceIoctl==0x8000e008u); Is(WindowsSelfProtectionTransport.QueryStatusIoctl==0x8000e00cu); Is(WindowsSelfProtectionTransport.PrepareUnloadIoctl==0x8000e010u); Is(WindowsSelfProtectionTransport.RegisterTrayIoctl==0x8000e014u); Is(WindowsSelfProtectionTransport.UnregisterTrayIoctl==0x8000e018u); });
+        Test("self protection IOCTL ABI stays fixed",()=> { Is(SelfProtectionProtocol.Version==3); Is(WindowsSelfProtectionTransport.ControlHeaderSize==16); Is(WindowsSelfProtectionTransport.ProcessIdentitySize==1088); Is(WindowsSelfProtectionTransport.ActivateRequestSize==3152); Is(WindowsSelfProtectionTransport.InitializeCommitRequestSize==40); Is(WindowsSelfProtectionTransport.InitializeAbortRequestSize==32); Is(WindowsSelfProtectionTransport.TrayRequestSize==1104); Is(WindowsSelfProtectionTransport.MaintenanceRequestSize==40); Is(WindowsSelfProtectionTransport.UnloadRequestSize==32); Is(WindowsSelfProtectionTransport.StatusSize==4288); Is(WindowsSelfProtectionTransport.BeginInitializeIoctl==0x8000e000u); Is(WindowsSelfProtectionTransport.CommitInitializeIoctl==0x8000e01cu); Is(WindowsSelfProtectionTransport.AbortInitializeIoctl==0x8000e020u); Is(WindowsSelfProtectionTransport.EnterMaintenanceIoctl==0x8000e004u); Is(WindowsSelfProtectionTransport.ExitMaintenanceIoctl==0x8000e008u); Is(WindowsSelfProtectionTransport.QueryStatusIoctl==0x8000e00cu); Is(WindowsSelfProtectionTransport.PrepareUnloadIoctl==0x8000e010u); Is(WindowsSelfProtectionTransport.RegisterTrayIoctl==0x8000e014u); Is(WindowsSelfProtectionTransport.UnregisterTrayIoctl==0x8000e018u); });
         Test("default IPv4 and IPv6 routes valid",()=> { var b=Snapshot(); b.Adapters[0].Routes=new[]{new RouteSetting { Prefix="0.0.0.0/0",NextHop="192.168.1.1",Metric=5 },new RouteSetting { Prefix="::/0",NextHop="fe80::1",Metric=10 }}; b.Validate(); });
         Test("route family mismatch rejected",()=> { var b=Snapshot(); b.Adapters[0].Routes=new[]{new RouteSetting { Prefix="::/0",NextHop="192.168.1.1",Metric=5 }}; Throws(()=>b.Validate()); });
         Test("IPv6 DNS and router discovery drift",()=> { var b=Snapshot(); var c=Json.Copy(b); c.Adapters[0].RouterDiscovery=false; c.Adapters[0].DnsV6Automatic=false; c.Adapters[0].DnsV6=new[]{"2001:db8::53"}; Is(NetworkCompare.Drift(b,c).Count==1); });
@@ -147,6 +147,11 @@ static class Tests {
             });
             Is(result.Passed && !result.MappingWritebackConditionMet && result.ScannedEntries==3 && result.Issues.Count==0);
         });
+        Test("file identity preflight requires handle and path attributes to agree",()=> {
+            var observation=Observation("state",7,12,false,true,false); observation.AttributesConsistent=false;
+            var result=SelfProtectionFilePreflight.Evaluate(new[] { observation });
+            Is(!result.Passed && result.Issues.Any(issue=>issue.IndexOf("句柄属性",StringComparison.Ordinal)>=0));
+        });
         Test("activation preflight fails before transport and does not claim mapped-write protection",()=> {
             var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
             var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full });
@@ -157,33 +162,54 @@ static class Tests {
             var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
             var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full });
             var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromMinutes(5),()=>SelfProtectionFilePreflight.Evaluate(new[] { Observation("state",7,12,false,true,false) }));
-            Is(coordinator.Activate(DateTime.UtcNow) && transport.Requests.Count==1 && !coordinator.Status.MappingWritebackConditionMet && coordinator.Status.UserText().IndexOf("映射写回条件未满足",StringComparison.Ordinal)>=0);
+            Is(coordinator.Activate(DateTime.UtcNow) && transport.Requests.Count==2 && transport.Requests[0].Operation==SelfProtectionOperation.BeginInitialize && transport.Requests[1].Operation==SelfProtectionOperation.CommitInitialize && !coordinator.Status.MappingWritebackConditionMet && coordinator.Status.UserText().IndexOf("映射写回条件未满足",StringComparison.Ordinal)>=0);
+        });
+        Test("activation keeps protection in initializing until the second scan and commit",()=> {
+            var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation; var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full });
+            SelfProtectionCoordinator coordinator=null; int scans=0;
+            coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromMinutes(5),()=> { scans++; if(scans==2) Is(coordinator.Status.State==SelfProtectionState.Initializing && !coordinator.Status.ProcessProtectionActive); return GoodPreflight(); });
+            Is(coordinator.Activate(DateTime.UtcNow)); Is(scans==2 && coordinator.Status.State==SelfProtectionState.Active && transport.Requests.Count==2 && transport.Requests[0].Operation==SelfProtectionOperation.BeginInitialize && transport.Requests[1].Operation==SelfProtectionOperation.CommitInitialize);
+        });
+        Test("second scan failure aborts initialization and never publishes active",()=> {
+            var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation; var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full }); int scans=0;
+            var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromMinutes(5),()=> ++scans==1?GoodPreflight():SelfProtectionFilePreflight.Evaluate(new[] { Observation("alias",7,12,false,true,false),Observation("state",7,12,false,true,false) }));
+            Is(!coordinator.Activate(DateTime.UtcNow) && coordinator.Status.State==SelfProtectionState.Failed && !coordinator.Status.DriverLoaded && transport.Requests.Count==2 && transport.Requests[0].Operation==SelfProtectionOperation.BeginInitialize && transport.Requests[1].Operation==SelfProtectionOperation.AbortInitialize);
+        });
+        Test("commit failure aborts initialization without changing a stable active target",()=> {
+            var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation; var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full }); transport.FailCommit=true;
+            var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromMinutes(5),()=>GoodPreflight());
+            Is(!coordinator.Activate(DateTime.UtcNow) && coordinator.Status.State==SelfProtectionState.Failed && transport.Requests.Count==3 && transport.Requests[1].Operation==SelfProtectionOperation.CommitInitialize && transport.Requests[2].Operation==SelfProtectionOperation.AbortInitialize);
+        });
+        Test("active on the begin reply is rejected as a race",()=> {
+            var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation; var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full,Phase=SelfProtectionPhase.Active }); transport.PreserveBeginPhase=true;
+            var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromMinutes(5),()=>GoodPreflight());
+            Is(!coordinator.Activate(DateTime.UtcNow) && coordinator.Status.State==SelfProtectionState.Failed && transport.Requests.Count==2 && transport.Requests[0].Operation==SelfProtectionOperation.BeginInitialize && transport.Requests[1].Operation==SelfProtectionOperation.AbortInitialize);
         });
         Test("self protection never reports active when driver is unavailable",()=> {
             var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=false,DriverLoaded=false,Error="未加载" });
-            var coordinator=new SelfProtectionCoordinator(transport,Identity, (session,op)=>true, TimeSpan.FromMinutes(5));
+            var coordinator=new SelfProtectionCoordinator(transport,Identity, (session,op)=>true, TimeSpan.FromMinutes(5),()=>GoodPreflight());
             Is(!coordinator.Activate(DateTime.UtcNow) && coordinator.Status.State==SelfProtectionState.Failed && !coordinator.Status.DriverLoaded && coordinator.Status.UserText().Contains("未启用"));
         });
         Test("self protection requires all capabilities before activation",()=> {
             var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=SelfProtectionCapability.ProcessTermination });
-            var coordinator=new SelfProtectionCoordinator(transport,Identity, (session,op)=>true, TimeSpan.FromMinutes(5));
+            var coordinator=new SelfProtectionCoordinator(transport,Identity, (session,op)=>true, TimeSpan.FromMinutes(5),()=>GoodPreflight());
             Is(!coordinator.Activate(DateTime.UtcNow) && coordinator.Status.State==SelfProtectionState.Degraded && !coordinator.Status.FileProtectionActive && !coordinator.Status.ServiceStopProtectionActive);
         });
         Test("self protection maintenance is authenticated, bounded and reversible",()=> {
             var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
             var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full },new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full },new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full });
-            var coordinator=new SelfProtectionCoordinator(transport,Identity, (session,op)=>session=="teacher-session", TimeSpan.FromSeconds(5)); var t=DateTime.UtcNow;
+            var coordinator=new SelfProtectionCoordinator(transport,Identity, (session,op)=>session=="teacher-session", TimeSpan.FromSeconds(5),()=>GoodPreflight()); var t=DateTime.UtcNow;
             Is(coordinator.Activate(t)); Is(!coordinator.Status.ServiceStopProtectionActive); Is(!coordinator.BeginMaintenance("forged-session",t)); Is(coordinator.BeginMaintenance("teacher-session",t)); Is(coordinator.Status.State==SelfProtectionState.Maintenance && coordinator.CanStopService("teacher-session",t.AddSeconds(1))); Is(!coordinator.CanStopService("forged-session",t.AddSeconds(1))); Is(coordinator.EndMaintenance("teacher-session",t.AddSeconds(2)) && coordinator.Status.State==SelfProtectionState.Active);
         });
         Test("expired self protection maintenance closes without user authorization",()=> {
             var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
             var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full },new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full },new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full });
-            var coordinator=new SelfProtectionCoordinator(transport,Identity, (session,op)=>true, TimeSpan.FromSeconds(5)); var t=DateTime.UtcNow; Is(coordinator.Activate(t)); Is(coordinator.BeginMaintenance("session",t)); coordinator.Tick(t.AddSeconds(6)); Is(coordinator.Status.State==SelfProtectionState.Active && transport.Requests.Count==3);
+            var coordinator=new SelfProtectionCoordinator(transport,Identity, (session,op)=>true, TimeSpan.FromSeconds(5),()=>GoodPreflight()); var t=DateTime.UtcNow; Is(coordinator.Activate(t)); Is(coordinator.BeginMaintenance("session",t)); coordinator.Tick(t.AddSeconds(6)); Is(coordinator.Status.State==SelfProtectionState.Active && transport.Requests.Count==4);
         });
         Test("self protection maintenance failure fails closed",()=> {
             var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
             var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full },new SelfProtectionReply { Accepted=false,DriverLoaded=false,Error="synthetic maintenance failure" });
-            var coordinator=new SelfProtectionCoordinator(transport,Identity, (session,op)=>true, TimeSpan.FromMinutes(5)); var t=DateTime.UtcNow; Is(coordinator.Activate(t)); Is(!coordinator.BeginMaintenance("session",t)); Is(coordinator.Status.State==SelfProtectionState.Failed && !coordinator.CanStopService("session",t.AddSeconds(1)));
+            var coordinator=new SelfProtectionCoordinator(transport,Identity, (session,op)=>true, TimeSpan.FromMinutes(5),()=>GoodPreflight()); var t=DateTime.UtcNow; Is(coordinator.Activate(t)); Is(!coordinator.BeginMaintenance("session",t)); Is(coordinator.Status.State==SelfProtectionState.Failed && !coordinator.CanStopService("session",t.AddSeconds(1)));
         });
         Test("self protection prepare unload requires the active maintenance lease",()=> {
             var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
@@ -192,29 +218,32 @@ static class Tests {
                 new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full },
                 new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=SelfProtectionCapability.FileMutation },
                 new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full });
-            var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>session=="teacher",TimeSpan.FromMinutes(5));
+            var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>session=="teacher",TimeSpan.FromMinutes(5),()=>GoodPreflight());
             var t=DateTime.UtcNow; Is(coordinator.Activate(t)); Is(!coordinator.PrepareUnload("teacher",t)); Is(coordinator.BeginMaintenance("teacher",t)); Is(coordinator.PrepareUnload("teacher",t.AddSeconds(1))); Is(coordinator.Status.State==SelfProtectionState.Maintenance && coordinator.CanStopService("teacher",t.AddSeconds(2))); Is(coordinator.EndMaintenance("teacher",t.AddSeconds(3)));
         });
         Test("failed driver keeps an authenticated recovery stop path",()=> {
             var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=false,DriverLoaded=false,Error="device absent" });
-            var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromMinutes(5)); var t=DateTime.UtcNow;
+            var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromMinutes(5),()=>GoodPreflight()); var t=DateTime.UtcNow;
             Is(!coordinator.Activate(t)); Is(coordinator.CanStopForRecovery("logged-in",t)); Is(!coordinator.CanStopForRecovery(null,t));
         });
         Test("uncertain maintenance exit retains lease and retries at expiry",()=> {
             var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
             var ok=new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full };
             var transport=new FakeProtectionTransport(ok,ok,new SelfProtectionReply { Accepted=false,DriverLoaded=false,Error="lost response" },ok);
-            var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromSeconds(5));
+            var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromSeconds(5),()=>GoodPreflight());
             var t=DateTime.UtcNow; Is(coordinator.Activate(t)); Is(coordinator.BeginMaintenance("teacher",t));
             var lease=coordinator.Status.MaintenanceLeaseId;
             Is(!coordinator.EndMaintenance("teacher",t.AddSeconds(1)));
             Is(coordinator.Status.MaintenanceLeaseId==lease && !coordinator.CanStopService("teacher",t.AddSeconds(2)));
-            coordinator.Tick(t.AddSeconds(6)); Is(coordinator.Status.State==SelfProtectionState.Active && transport.Requests.Count==4);
+            coordinator.Tick(t.AddSeconds(6)); Is(coordinator.Status.State==SelfProtectionState.Active && transport.Requests.Count==5);
         });
         Test("driver status rejects truncated, stale and mismatched replies",()=> {
-            var request=SelfProtectionRequest.Create(SelfProtectionOperation.Activate,Identity(),null,DateTime.MinValue); request.ProtectedDataRoot="kernel-data-root";
+            var request=SelfProtectionRequest.CreateCommit(Identity(),1,DateTime.UtcNow); request.ProtectedDataRoot="kernel-data-root";
             var valid=DriverStatus(request,false);
             Is(WindowsSelfProtectionTransport.DecodeStatus(valid,request,"kernel-image","kernel-root").Capabilities==(SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation));
+            var begin=SelfProtectionRequest.Create(SelfProtectionOperation.BeginInitialize,Identity(),null,DateTime.MinValue); begin.ProtectedDataRoot="kernel-data-root";
+            var initializing=WindowsSelfProtectionTransport.DecodeStatus(DriverStatus(begin,false,true),begin,"kernel-image","kernel-root");
+            Is(initializing.Phase==SelfProtectionPhase.Initializing && initializing.Capabilities==SelfProtectionCapability.None);
             Throws(()=>WindowsSelfProtectionTransport.DecodeStatus(new byte[12],request,"kernel-image","kernel-root"));
             foreach(int offset in new[]{0,4,8,12,16,20,24,32,40,56,88,104,1128}) {
                 var bad=(byte[])valid.Clone(); bad[offset]^=128;
@@ -232,19 +261,19 @@ static class Tests {
         Test("maintenance reuses the registered process instance identity",()=> {
             var ok=new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation };
             var transport=new FakeProtectionTransport(ok,ok,ok); int captures=0;
-            var coordinator=new SelfProtectionCoordinator(transport,()=>{ captures++; return Identity(); },(session,op)=>true,TimeSpan.FromMinutes(1));
+            var coordinator=new SelfProtectionCoordinator(transport,()=>{ captures++; return Identity(); },(session,op)=>true,TimeSpan.FromMinutes(1),()=>GoodPreflight());
             var t=DateTime.UtcNow; Is(coordinator.Activate(t)); Is(coordinator.BeginMaintenance("teacher",t)); Is(coordinator.EndMaintenance("teacher",t));
-            Is(captures==1 && Object.ReferenceEquals(transport.Requests[0].Identity,transport.Requests[2].Identity));
+            Is(captures==1 && Object.ReferenceEquals(transport.Requests[0].Identity,transport.Requests[3].Identity));
         });
         Test("self protection rejects arbitrary identity and request secrets",()=> {
             var identity=Identity(); identity.ImagePath=Path.Combine(Path.GetTempPath(),"not-ycsz.exe"); Throws(()=>identity.Validate());
-            var request=SelfProtectionRequest.Create(SelfProtectionOperation.Activate,Identity(),null,DateTime.MinValue); Is(request.MaintenanceLeaseId==null && request.RequestId.Length==32);
+            var request=SelfProtectionRequest.Create(SelfProtectionOperation.BeginInitialize,Identity(),null,DateTime.MinValue); Is(request.MaintenanceLeaseId==null && request.RequestId.Length==32);
         });
         Test("tray registration binds a user session identity and can be revoked",()=> {
             var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
             var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full },new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full },new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full });
-            var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromMinutes(5)); var tray=TrayIdentity(); var t=DateTime.UtcNow;
-            Is(coordinator.Activate(t)); Is(coordinator.RegisterTray(tray,t)); Is(transport.Requests[1].Operation==SelfProtectionOperation.RegisterTray && transport.Requests[1].TrayIdentity.SessionId==7); Is(coordinator.UnregisterTray(tray,t)); Is(transport.Requests[2].Operation==SelfProtectionOperation.UnregisterTray);
+            var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromMinutes(5),()=>GoodPreflight()); var tray=TrayIdentity(); var t=DateTime.UtcNow;
+            Is(coordinator.Activate(t)); Is(coordinator.RegisterTray(tray,t)); Is(transport.Requests[2].Operation==SelfProtectionOperation.RegisterTray && transport.Requests[2].TrayIdentity.SessionId==7); Is(coordinator.UnregisterTray(tray,t)); Is(transport.Requests[3].Operation==SelfProtectionOperation.UnregisterTray);
         });
         Console.WriteLine("RESULT "+(count-failed)+"/"+count+" passed; Windows integration NOT executed"); return failed==0?0:1;
     }
@@ -265,22 +294,37 @@ static class Tests {
         public void Dispose() { Disposed=true; }
     }
     sealed class FakeProtectionTransport : ISelfProtectionTransport {
-        readonly Queue<SelfProtectionReply> replies; public readonly List<SelfProtectionRequest> Requests=new List<SelfProtectionRequest>();
+        readonly Queue<SelfProtectionReply> replies; SelfProtectionReply beginReply; public readonly List<SelfProtectionRequest> Requests=new List<SelfProtectionRequest>(); public bool FailCommit; public bool PreserveBeginPhase;
         public FakeProtectionTransport(params SelfProtectionReply[] replies) { this.replies=new Queue<SelfProtectionReply>(replies); }
-        public SelfProtectionReply Send(SelfProtectionRequest request) { request.Validate(DateTime.UtcNow); Requests.Add(request); return replies.Count==0?new SelfProtectionReply { Accepted=false,DriverLoaded=false,Error="no synthetic reply" }:replies.Dequeue(); }
+        public SelfProtectionReply Send(SelfProtectionRequest request) {
+            request.Validate(DateTime.UtcNow); Requests.Add(request);
+            if(request.Operation==SelfProtectionOperation.AbortInitialize) return new SelfProtectionReply { Accepted=true,DriverLoaded=false,Phase=SelfProtectionPhase.Unavailable };
+            if(request.Operation==SelfProtectionOperation.BeginInitialize) {
+                beginReply=replies.Count==0?new SelfProtectionReply { Accepted=false,DriverLoaded=false,Error="no synthetic reply" }:replies.Dequeue();
+                return PreserveBeginPhase?Clone(beginReply,beginReply.Phase):Clone(beginReply,SelfProtectionPhase.Initializing);
+            }
+            if(request.Operation==SelfProtectionOperation.CommitInitialize) {
+                if(FailCommit) return new SelfProtectionReply { Accepted=false,DriverLoaded=false,Error="synthetic commit failure" };
+                return beginReply==null?new SelfProtectionReply { Accepted=false,DriverLoaded=false,Error="no synthetic begin" }:Clone(beginReply,SelfProtectionPhase.Active);
+            }
+            return replies.Count==0?new SelfProtectionReply { Accepted=false,DriverLoaded=false,Error="no synthetic reply" }:replies.Dequeue();
+        }
+        static SelfProtectionReply Clone(SelfProtectionReply reply,SelfProtectionPhase phase) { return new SelfProtectionReply { Accepted=reply.Accepted,DriverLoaded=reply.DriverLoaded,Capabilities=phase==SelfProtectionPhase.Initializing?SelfProtectionCapability.None:reply.Capabilities,Error=reply.Error,Phase=phase }; }
     }
-    static byte[] DriverStatus(SelfProtectionRequest request,bool maintenance) {
-        var bytes=new byte[4264];
+    static byte[] DriverStatus(SelfProtectionRequest request,bool maintenance) { return DriverStatus(request,maintenance,false); }
+    static byte[] DriverStatus(SelfProtectionRequest request,bool maintenance,bool initializing) {
+        var bytes=new byte[4288];
         Action<int,byte[]> put=(offset,value)=>Array.Copy(value,0,bytes,offset,value.Length);
-        put(0,BitConverter.GetBytes(4264u)); put(4,BitConverter.GetBytes(2u)); put(8,BitConverter.GetBytes(maintenance?79u:71u));
+        put(0,BitConverter.GetBytes(4288u)); put(4,BitConverter.GetBytes(3u)); put(8,BitConverter.GetBytes(initializing?198u:(maintenance?79u:71u)));
         put(16,BitConverter.GetBytes((uint)request.Identity.ProcessId)); put(24,BitConverter.GetBytes(request.Identity.StartTimeUtcFileTime));
         if(maintenance) { put(32,BitConverter.GetBytes(request.MaintenanceExpiresUtcFileTime)); put(40,HexBytes(request.MaintenanceLeaseId)); }
         put(56,HexBytes(request.Identity.ImageSha256)); put(88,HexBytes(request.Identity.InstanceNonce));
-        put(104,System.Text.Encoding.Unicode.GetBytes("kernel-image")); put(1128,System.Text.Encoding.Unicode.GetBytes("kernel-root")); put(2152,System.Text.Encoding.Unicode.GetBytes("kernel-data-root")); return bytes;
+        put(104,System.Text.Encoding.Unicode.GetBytes("kernel-image")); put(1128,System.Text.Encoding.Unicode.GetBytes("kernel-root")); put(2152,System.Text.Encoding.Unicode.GetBytes("kernel-data-root")); if(initializing) { put(3176,BitConverter.GetBytes(1u)); put(3180,BitConverter.GetBytes(1u)); } return bytes;
     }
     static byte[] HexBytes(string value) { var result=new byte[value.Length/2]; for(int i=0;i<result.Length;i++) result[i]=Convert.ToByte(value.Substring(i*2,2),16); return result; }
     static SelfProtectionFileIdentityObservation Observation(string path,ulong volume,ulong fileIndex,bool reparse,bool readable,bool directory) { return Observation(path,volume,fileIndex,reparse,readable,directory,1); }
-    static SelfProtectionFileIdentityObservation Observation(string path,ulong volume,ulong fileIndex,bool reparse,bool readable,bool directory,uint linkCount) { return new SelfProtectionFileIdentityObservation { Path=path,VolumeSerial=volume,FileIndex=fileIndex,LinkCount=linkCount,ReparsePoint=reparse,Readable=readable,IsDirectory=directory }; }
+    static SelfProtectionPreflightResult GoodPreflight() { return SelfProtectionFilePreflight.Evaluate(new[] { Observation("state",7,12,false,true,false) }); }
+    static SelfProtectionFileIdentityObservation Observation(string path,ulong volume,ulong fileIndex,bool reparse,bool readable,bool directory,uint linkCount) { return new SelfProtectionFileIdentityObservation { Path=path,VolumeSerial=volume,FileIndex=fileIndex,LinkCount=linkCount,ReparsePoint=reparse,Readable=readable,IsDirectory=directory,AttributesConsistent=true }; }
     static ProtectionIdentity Identity() { return new ProtectionIdentity { ServiceName=ProtectionIdentity.ExpectedServiceName,ProcessId=1234,SessionId=0,StartTimeUtcFileTime=DateTime.UtcNow.ToFileTimeUtc(),ImagePath=Path.Combine(Path.GetTempPath(),"Ycsz.exe"),ImageSha256=new string('a',64),InstanceNonce=new string('b',32) }; }
     static ProtectionIdentity TrayIdentity() { return new ProtectionIdentity { ServiceName=ProtectionIdentity.ExpectedServiceName,ProcessId=5678,SessionId=7,StartTimeUtcFileTime=DateTime.UtcNow.ToFileTimeUtc(),ImagePath=Path.Combine(Path.GetTempPath(),"Ycsz.exe"),ImageSha256=new string('c',64),InstanceNonce=new string('d',32) }; }
 }

@@ -32,9 +32,10 @@ typedef struct { int MajorFunction,IrpFlags; struct { struct { int FileInformati
 typedef struct { IOPB *Iopb; } DATA;
 typedef DATA *PFLT_CALLBACK_DATA;
 typedef void *PCFLT_RELATED_OBJECTS;
-static int active=1, mutation, trusted, product, stream, resolved=1, ancestor;
+static int active=1, initializing, mutation, trusted, product, stream, resolved=1, ancestor;
 static NAME name;
 static int YcpProtectionIsActive(void) { return active; }
+static int YcpProtectionIsInitializing(void) { return initializing; }
 static int YcpCreateRequestsMutation(DATA *d) { (void)d; return mutation; }
 static int YcpIsProtectedSetInformationClass(int c) { (void)c; return mutation; }
 static int YcpFileSystemControlRequestsMutation(DATA *d) { (void)d; return mutation; }

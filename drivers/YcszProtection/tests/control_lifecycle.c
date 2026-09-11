@@ -35,10 +35,11 @@ typedef struct { IO_STACK_LOCATION Stack; NTSTATUS Status; ULONG_PTR Information
 typedef IRP *PIRP;
 static struct {
     int Lock;
-    BOOLEAN Unloading, Active, UnloadPrepared;
+    BOOLEAN Unloading, Active, Initializing, UnloadPrepared;
     ULONG OpenFileObjects;
 } g_YcpState;
 static int leaseValid, cleanupCalls;
+static BOOLEAN initializationValid;
 static PIO_STACK_LOCATION IoGetCurrentIrpStackLocation(PIRP irp) { return &irp->Stack; }
 static void KeEnterCriticalRegion(void) {}
 static void KeLeaveCriticalRegion(void) {}
@@ -48,9 +49,10 @@ static NTSTATUS YcpCompleteIrp(PIRP irp, NTSTATUS status, ULONG_PTR information)
     assert(!g_YcpState.Lock); irp->Status=status; irp->Information=information; return status;
 }
 static BOOLEAN YcpLeaseValidLocked(void) { assert(g_YcpState.Lock); return leaseValid; }
+static BOOLEAN YcpInitializationValidLocked(void) { assert(g_YcpState.Lock); return initializationValid; }
 static void YcpCleanup(BOOLEAN unregisterFilter) { assert(!g_YcpState.Lock); (void)unregisterFilter; ++cleanupCalls; }
 #include "control_lifecycle_extracted.inc"
-static void reset(void) { memset(&g_YcpState,0,sizeof(g_YcpState)); leaseValid=cleanupCalls=0; }
+static void reset(void) { memset(&g_YcpState,0,sizeof(g_YcpState)); leaseValid=cleanupCalls=initializationValid=0; }
 static NTSTATUS dispatch(FILE_OBJECT *file, unsigned major) {
     IRP irp={{major,file},99,99};
     NTSTATUS result=YcpCreateClose(NULL,&irp);
@@ -96,6 +98,10 @@ int main(void) {
     assert(YcpFilterUnloadAuthorized(0)==STATUS_FLT_DO_NOT_DETACH);
     puts("PASS lease expiry while waiting for a connection to close revokes unload");
 
+    reset(); g_YcpState.Initializing=1; initializationValid=0;
+    assert(YcpFilterUnloadAuthorized(0)==0 && cleanupCalls==1);
+    puts("PASS expired initialization without Active permits recovery unload");
+
     reset();
     assert(dispatch(NULL,IRP_MJ_CREATE)==STATUS_INVALID_PARAMETER);
     assert(dispatch(&a,IRP_MJ_CLOSE)==0 && g_YcpState.OpenFileObjects==0);
@@ -107,6 +113,6 @@ int main(void) {
     reset(); g_YcpState.Active=1;
     assert(YcpFilterUnloadAuthorized(FLTFL_FILTER_UNLOAD_MANDATORY)==0 && cleanupCalls==1);
     puts("PASS mandatory callback requests cleanup; this is not a veto capability");
-    puts("RESULT 5 lifecycle scenarios passed; Windows/WDK, forced-unload races and I/O-manager semantics NOT tested");
+    puts("RESULT 6 lifecycle scenarios passed; Windows/WDK, forced-unload races and I/O-manager semantics NOT tested");
     return 0;
 }

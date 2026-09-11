@@ -34,10 +34,12 @@ C_ASSERT(sizeof(WCHAR) == 2);
 C_ASSERT(sizeof(YCP_CONTROL_HEADER) == 16);
 C_ASSERT(sizeof(YCP_PROCESS_IDENTITY) == 1088);
 C_ASSERT(sizeof(YCP_ACTIVATE_REQUEST) == 3152);
+C_ASSERT(sizeof(YCP_INITIALIZE_COMMIT_REQUEST) == 40);
+C_ASSERT(sizeof(YCP_INITIALIZE_ABORT_REQUEST) == 32);
 C_ASSERT(sizeof(YCP_TRAY_REQUEST) == 1104);
 C_ASSERT(sizeof(YCP_MAINTENANCE_REQUEST) == 40);
 C_ASSERT(sizeof(YCP_UNLOAD_REQUEST) == 32);
-C_ASSERT(sizeof(YCP_STATUS) == 4264);
+C_ASSERT(sizeof(YCP_STATUS) == 4288);
 
 typedef struct _YCP_RUNTIME_STATE {
     EX_PUSH_LOCK Lock;
@@ -61,6 +63,11 @@ typedef struct _YCP_RUNTIME_STATE {
     BOOLEAN ObRegistered;
     BOOLEAN FilterStarted;
     BOOLEAN Unloading;
+    BOOLEAN Initializing;
+    ULONG InitializationExpectedEntries;
+    ULONG InitializationMarkedEntries;
+    ULONG InitializationFailures;
+    LONGLONG InitializationExpiresAt100ns;
     ULONG OpenFileObjects;
 } YCP_RUNTIME_STATE;
 
@@ -341,6 +348,23 @@ YcpLeaseValidLocked(
     return now.QuadPart < g_YcpState.LeaseExpiresAt100ns;
 }
 
+static BOOLEAN
+YcpInitializationValidLocked(
+    VOID
+    )
+{
+    LARGE_INTEGER now;
+
+    if (!g_YcpState.Initializing || g_YcpState.Unloading ||
+        g_YcpState.TargetProcess == NULL ||
+        PsGetProcessExitStatus(g_YcpState.TargetProcess) != STATUS_PENDING) {
+        return FALSE;
+    }
+
+    KeQuerySystemTime(&now);
+    return now.QuadPart < g_YcpState.InitializationExpiresAt100ns;
+}
+
 static VOID
 YcpClearTrayLocked(
     VOID
@@ -366,9 +390,14 @@ YcpClearTargetLocked(
     g_YcpState.TargetPid = 0;
     g_YcpState.TargetCreateTime100ns = 0;
     g_YcpState.Active = FALSE;
+    g_YcpState.Initializing = FALSE;
     g_YcpState.Maintenance = FALSE;
     g_YcpState.UnloadPrepared = FALSE;
     g_YcpState.LeaseExpiresAt100ns = 0;
+    g_YcpState.InitializationExpectedEntries = 0;
+    g_YcpState.InitializationMarkedEntries = 0;
+    g_YcpState.InitializationFailures = 0;
+    g_YcpState.InitializationExpiresAt100ns = 0;
     RtlZeroMemory(g_YcpState.LeaseId, sizeof(g_YcpState.LeaseId));
     RtlZeroMemory(g_YcpState.ImageSha256, sizeof(g_YcpState.ImageSha256));
     RtlZeroMemory(g_YcpState.InstanceNonce, sizeof(g_YcpState.InstanceNonce));
@@ -391,6 +420,11 @@ YcpCurrentStateLocked(
 
     if (g_YcpState.Active) {
         state |= YCP_STATE_ACTIVE;
+    }
+    if (YcpInitializationValidLocked()) {
+        state |= YCP_STATE_INITIALIZING;
+    } else if (g_YcpState.Initializing) {
+        state |= YCP_STATE_ERROR;
     }
     if (g_YcpState.ObRegistered) {
         state |= YCP_STATE_PROCESS_CALLBACK;
@@ -430,6 +464,10 @@ YcpBuildStatusLocked(
     Status->TargetSessionId = 0;
     Status->TargetCreateTime100ns = g_YcpState.TargetCreateTime100ns;
     Status->MaintenanceExpiresAt100ns = g_YcpState.LeaseExpiresAt100ns;
+    Status->InitializationExpectedEntries = g_YcpState.InitializationExpectedEntries;
+    Status->InitializationMarkedEntries = g_YcpState.InitializationMarkedEntries;
+    Status->InitializationFailures = g_YcpState.InitializationFailures;
+    Status->InitializationExpiresAt100ns = g_YcpState.InitializationExpiresAt100ns;
     RtlCopyMemory(Status->LeaseId, g_YcpState.LeaseId, sizeof(Status->LeaseId));
     RtlCopyMemory(Status->ImageSha256, g_YcpState.ImageSha256, sizeof(Status->ImageSha256));
     RtlCopyMemory(Status->InstanceNonce, g_YcpState.InstanceNonce, sizeof(Status->InstanceNonce));
@@ -705,7 +743,12 @@ YcpValidateTrayIdentity(
 }
 
 static NTSTATUS
-YcpActivate(
+YcpValidateCallerLocked(
+    _In_ PEPROCESS Caller
+    );
+
+static NTSTATUS
+YcpBeginInitialization(
     _In_ PEPROCESS Caller,
     _In_ const YCP_ACTIVATE_REQUEST *Request
     )
@@ -734,10 +777,9 @@ YcpActivate(
 
     KeEnterCriticalRegion();
     ExAcquirePushLockExclusive(&g_YcpState.Lock);
-    if (g_YcpState.Unloading || (g_YcpState.TargetProcess != NULL && g_YcpState.TargetProcess != Caller &&
-        PsGetProcessExitStatus(g_YcpState.TargetProcess) == STATUS_PENDING)) {
+    if (g_YcpState.Unloading) {
         ExReleasePushLockExclusive(&g_YcpState.Lock);
-    KeLeaveCriticalRegion();
+        KeLeaveCriticalRegion();
         YcpFreeString(&imagePath);
         YcpFreeString(&rootPath);
         YcpFreeString(&dataRootPath);
@@ -745,7 +787,21 @@ YcpActivate(
     }
 
     if (g_YcpState.TargetProcess != NULL) {
-        YcpClearTargetLocked();
+        if (g_YcpState.Initializing && !YcpInitializationValidLocked()) {
+            // A timed-out or exited initialization is stale and can be
+            // recovered by the next service instance. A stable Active target
+            // remains untouched and is never replaced by a new Begin.
+            YcpClearTargetLocked();
+        } else if (PsGetProcessExitStatus(g_YcpState.TargetProcess) == STATUS_PENDING) {
+            ExReleasePushLockExclusive(&g_YcpState.Lock);
+            KeLeaveCriticalRegion();
+            YcpFreeString(&imagePath);
+            YcpFreeString(&rootPath);
+            YcpFreeString(&dataRootPath);
+            return STATUS_DEVICE_BUSY;
+        } else {
+            YcpClearTargetLocked();
+        }
     }
 
     g_YcpState.TargetProcess = Caller;
@@ -761,12 +817,100 @@ YcpActivate(
     RtlZeroMemory(g_YcpState.LeaseId, sizeof(g_YcpState.LeaseId));
     g_YcpState.Maintenance = FALSE;
     g_YcpState.UnloadPrepared = FALSE;
-    g_YcpState.Active = TRUE;
+    g_YcpState.Active = FALSE;
+    g_YcpState.Initializing = TRUE;
+    g_YcpState.InitializationExpectedEntries = 0;
+    g_YcpState.InitializationMarkedEntries = 0;
+    g_YcpState.InitializationFailures = 0;
+    {
+        LARGE_INTEGER now;
+        KeQuerySystemTime(&now);
+        g_YcpState.InitializationExpiresAt100ns = now.QuadPart +
+            ((LONGLONG)YCP_INITIALIZATION_TIMEOUT_SECONDS * 10000000LL);
+    }
     g_YcpState.LastRequestId = Request->Header.RequestId;
     g_YcpState.LastStatus = STATUS_SUCCESS;
     ExReleasePushLockExclusive(&g_YcpState.Lock);
     KeLeaveCriticalRegion();
     return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+YcpCommitInitialization(
+    _In_ PEPROCESS Caller,
+    _In_ const YCP_INITIALIZE_COMMIT_REQUEST *Request
+    )
+{
+    NTSTATUS status;
+
+    status = YcpValidateHeader(&Request->Header, sizeof(*Request));
+    if (!NT_SUCCESS(status) || Request->ExpectedEntries == 0 || Request->Reserved != 0 ||
+        YcpIsZeroBytes(Request->InstanceNonce, sizeof(Request->InstanceNonce))) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    KeEnterCriticalRegion();
+    ExAcquirePushLockExclusive(&g_YcpState.Lock);
+    status = YcpValidateCallerLocked(Caller);
+    if (NT_SUCCESS(status)) {
+        if (!g_YcpState.Initializing || g_YcpState.Active) {
+            status = STATUS_INVALID_DEVICE_STATE;
+        } else if (!RtlEqualMemory(g_YcpState.InstanceNonce, Request->InstanceNonce,
+                                   sizeof(g_YcpState.InstanceNonce))) {
+            status = STATUS_ACCESS_DENIED;
+        } else if (!YcpInitializationValidLocked()) {
+            status = STATUS_TIMEOUT;
+        } else if (g_YcpState.InitializationFailures != 0 ||
+                   g_YcpState.InitializationMarkedEntries < Request->ExpectedEntries) {
+            status = STATUS_DEVICE_NOT_READY;
+        } else if (g_YcpState.LastRequestId == Request->Header.RequestId) {
+            status = STATUS_INVALID_PARAMETER;
+        } else {
+            g_YcpState.InitializationExpectedEntries = Request->ExpectedEntries;
+            g_YcpState.Initializing = FALSE;
+            g_YcpState.InitializationExpiresAt100ns = 0;
+            g_YcpState.Active = TRUE;
+            g_YcpState.LastRequestId = Request->Header.RequestId;
+            g_YcpState.LastStatus = STATUS_SUCCESS;
+        }
+    }
+    ExReleasePushLockExclusive(&g_YcpState.Lock);
+    KeLeaveCriticalRegion();
+    return status;
+}
+
+static NTSTATUS
+YcpAbortInitialization(
+    _In_ PEPROCESS Caller,
+    _In_ const YCP_INITIALIZE_ABORT_REQUEST *Request
+    )
+{
+    NTSTATUS status;
+    ULONGLONG requestId = Request->Header.RequestId;
+
+    status = YcpValidateHeader(&Request->Header, sizeof(*Request));
+    if (!NT_SUCCESS(status) || YcpIsZeroBytes(Request->InstanceNonce, sizeof(Request->InstanceNonce))) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    KeEnterCriticalRegion();
+    ExAcquirePushLockExclusive(&g_YcpState.Lock);
+    status = YcpValidateCallerLocked(Caller);
+    if (NT_SUCCESS(status) && !g_YcpState.Initializing) {
+        status = STATUS_INVALID_DEVICE_STATE;
+    }
+    if (NT_SUCCESS(status) && !RtlEqualMemory(g_YcpState.InstanceNonce, Request->InstanceNonce,
+                                               sizeof(g_YcpState.InstanceNonce))) {
+        status = STATUS_ACCESS_DENIED;
+    }
+    if (NT_SUCCESS(status)) {
+        YcpClearTargetLocked();
+        g_YcpState.LastRequestId = requestId;
+        g_YcpState.LastStatus = STATUS_SUCCESS;
+    }
+    ExReleasePushLockExclusive(&g_YcpState.Lock);
+    KeLeaveCriticalRegion();
+    return status;
 }
 
 static NTSTATUS
@@ -849,6 +993,9 @@ YcpUnregisterTray(
     KeEnterCriticalRegion();
     ExAcquirePushLockExclusive(&g_YcpState.Lock);
     status = YcpValidateCallerLocked(Caller);
+    if (NT_SUCCESS(status) && !g_YcpState.Active) {
+        status = STATUS_DEVICE_NOT_READY;
+    }
     if (NT_SUCCESS(status) && g_YcpState.TrayProcess != NULL &&
         !YcpIdentityEquals(&g_YcpState.TrayIdentity, &Request->Identity)) {
         status = STATUS_ACCESS_DENIED;
@@ -887,6 +1034,9 @@ YcpEnterMaintenance(
     KeEnterCriticalRegion();
     ExAcquirePushLockExclusive(&g_YcpState.Lock);
     status = YcpValidateCallerLocked(Caller);
+    if (NT_SUCCESS(status) && !g_YcpState.Active) {
+        status = STATUS_DEVICE_NOT_READY;
+    }
     if (NT_SUCCESS(status)) {
         if (g_YcpState.LastRequestId == Request->Header.RequestId) {
             status = STATUS_INVALID_PARAMETER;
@@ -922,6 +1072,9 @@ YcpExitMaintenance(
     KeEnterCriticalRegion();
     ExAcquirePushLockExclusive(&g_YcpState.Lock);
     status = YcpValidateCallerLocked(Caller);
+    if (NT_SUCCESS(status) && !g_YcpState.Active) {
+        status = STATUS_DEVICE_NOT_READY;
+    }
     if (NT_SUCCESS(status)) {
         if (g_YcpState.LastRequestId == Request->Header.RequestId ||
             !g_YcpState.Maintenance ||
@@ -957,6 +1110,9 @@ YcpPrepareUnload(
     KeEnterCriticalRegion();
     ExAcquirePushLockExclusive(&g_YcpState.Lock);
     status = YcpValidateCallerLocked(Caller);
+    if (NT_SUCCESS(status) && !g_YcpState.Active) {
+        status = STATUS_DEVICE_NOT_READY;
+    }
     if (NT_SUCCESS(status)) {
         if (g_YcpState.LastRequestId == Request->Header.RequestId ||
             !YcpLeaseValidLocked() ||
@@ -983,7 +1139,7 @@ YcpQueryStatus(
 
     KeEnterCriticalRegion();
     ExAcquirePushLockShared(&g_YcpState.Lock);
-    if (g_YcpState.Active && !YcpTargetMatchesLocked(Caller)) {
+    if ((g_YcpState.Active || g_YcpState.Initializing) && !YcpTargetMatchesLocked(Caller)) {
         result = STATUS_ACCESS_DENIED;
     } else {
         YcpBuildStatusLocked(Status);
@@ -1019,6 +1175,42 @@ YcpProtectionIsActive(
     ExReleasePushLockShared(&g_YcpState.Lock);
     KeLeaveCriticalRegion();
     return active;
+}
+
+BOOLEAN
+YcpProtectionIsInitializing(
+    VOID
+    )
+{
+    BOOLEAN initializing;
+
+    KeEnterCriticalRegion();
+    ExAcquirePushLockShared(&g_YcpState.Lock);
+    initializing = YcpInitializationValidLocked();
+    ExReleasePushLockShared(&g_YcpState.Lock);
+    KeLeaveCriticalRegion();
+    return initializing;
+}
+
+VOID
+YcpRecordInitializationStream(
+    _In_ PEPROCESS Requestor,
+    _In_ BOOLEAN Marked
+    )
+{
+    KeEnterCriticalRegion();
+    ExAcquirePushLockExclusive(&g_YcpState.Lock);
+    if (YcpInitializationValidLocked() && YcpTargetMatchesLocked(Requestor)) {
+        if (Marked) {
+            if (g_YcpState.InitializationMarkedEntries != MAXULONG) {
+                ++g_YcpState.InitializationMarkedEntries;
+            }
+        } else if (g_YcpState.InitializationFailures != MAXULONG) {
+            ++g_YcpState.InitializationFailures;
+        }
+    }
+    ExReleasePushLockExclusive(&g_YcpState.Lock);
+    KeLeaveCriticalRegion();
 }
 
 BOOLEAN
@@ -1061,7 +1253,7 @@ YcpShouldProtectFile(
 
     KeEnterCriticalRegion();
     ExAcquirePushLockShared(&g_YcpState.Lock);
-    protect = g_YcpState.Active && !g_YcpState.Unloading &&
+    protect = (g_YcpState.Active || YcpInitializationValidLocked()) && !g_YcpState.Unloading &&
         ((g_YcpState.ProtectedRoot.Buffer != NULL &&
           YcpPathHasBoundaryPrefix(&g_YcpState.ProtectedRoot, NormalizedName)) ||
          (g_YcpState.ProtectedDataRoot.Buffer != NULL &&
@@ -1077,7 +1269,7 @@ YcpShouldProtectAncestor(_In_ PUNICODE_STRING NormalizedName)
     BOOLEAN protect;
     KeEnterCriticalRegion();
     ExAcquirePushLockShared(&g_YcpState.Lock);
-    protect = g_YcpState.Active && !g_YcpState.Unloading &&
+    protect = (g_YcpState.Active || YcpInitializationValidLocked()) && !g_YcpState.Unloading &&
         ((g_YcpState.ProtectedRoot.Buffer != NULL &&
           YcpPathIsStrictAncestor(NormalizedName, &g_YcpState.ProtectedRoot)) ||
          (g_YcpState.ProtectedDataRoot.Buffer != NULL &&
@@ -1100,7 +1292,8 @@ YcpIsTrustedWriter(
     if (process == NULL) return FALSE;
     KeEnterCriticalRegion();
     ExAcquirePushLockShared(&g_YcpState.Lock);
-    allowed = g_YcpState.Active && !g_YcpState.Unloading && YcpTargetMatchesLocked(process);
+    allowed = (g_YcpState.Active || YcpInitializationValidLocked()) &&
+        !g_YcpState.Unloading && YcpTargetMatchesLocked(process);
     ExReleasePushLockShared(&g_YcpState.Lock);
     KeLeaveCriticalRegion();
     return allowed;
@@ -1181,11 +1374,31 @@ YcpDeviceControl(
     }
 
     switch (stack->Parameters.DeviceIoControl.IoControlCode) {
-    case IOCTL_YCP_ACTIVATE:
+    case IOCTL_YCP_BEGIN_INITIALIZE:
         if (inputLength != sizeof(YCP_ACTIVATE_REQUEST)) {
             status = STATUS_BUFFER_TOO_SMALL;
         } else {
-            status = YcpActivate(caller, (const YCP_ACTIVATE_REQUEST *)buffer);
+            status = YcpBeginInitialization(caller, (const YCP_ACTIVATE_REQUEST *)buffer);
+        }
+        break;
+
+    case IOCTL_YCP_COMMIT_INITIALIZE:
+        if (inputLength != sizeof(YCP_INITIALIZE_COMMIT_REQUEST)) {
+            status = STATUS_BUFFER_TOO_SMALL;
+        } else {
+            status = YcpCommitInitialization(
+                caller,
+                (const YCP_INITIALIZE_COMMIT_REQUEST *)buffer);
+        }
+        break;
+
+    case IOCTL_YCP_ABORT_INITIALIZE:
+        if (inputLength != sizeof(YCP_INITIALIZE_ABORT_REQUEST)) {
+            status = STATUS_BUFFER_TOO_SMALL;
+        } else {
+            status = YcpAbortInitialization(
+                caller,
+                (const YCP_INITIALIZE_ABORT_REQUEST *)buffer);
         }
         break;
 
@@ -1299,7 +1512,8 @@ YcpFilterUnloadAuthorized(_In_ FLT_FILTER_UNLOAD_FLAGS Flags)
     // here, at the actual unload point, rather than by publishing DriverUnload.
     KeEnterCriticalRegion();
     ExAcquirePushLockExclusive(&g_YcpState.Lock);
-    allowed = !g_YcpState.Unloading && g_YcpState.OpenFileObjects == 0 && (!g_YcpState.Active ||
+    allowed = !g_YcpState.Unloading && g_YcpState.OpenFileObjects == 0 &&
+        ((!g_YcpState.Active && (!g_YcpState.Initializing || !YcpInitializationValidLocked())) ||
         (g_YcpState.UnloadPrepared && YcpLeaseValidLocked()));
     if ((Flags & FLTFL_FILTER_UNLOAD_MANDATORY) != 0) {
         // Mandatory unload cannot be vetoed by this callback. The supported

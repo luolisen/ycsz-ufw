@@ -13,6 +13,9 @@ namespace Ycsz {
         public bool ReparsePoint;
         public bool Readable;
         public bool IsDirectory;
+        // When populated by Check, this records that path metadata agreed
+        // with the authoritative attributes returned by the opened handle.
+        public bool AttributesConsistent;
     }
 
     public sealed class SelfProtectionPreflightResult {
@@ -62,11 +65,13 @@ namespace Ycsz {
             var issues=new List<string>();
             if(roots==null || roots.Length==0) issues.Add("未提供保护根");
             else {
+                var validatedAncestors=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach(string root in roots) {
                     if(String.IsNullOrWhiteSpace(root)) { issues.Add("保护根为空"); continue; }
                     string full;
                     try { full=Path.GetFullPath(root); } catch(Exception e) { issues.Add("保护根路径无效:"+root+":"+e.Message); continue; }
                     if(!Directory.Exists(full)) { issues.Add("保护根不存在:"+full); continue; }
+                    ValidateAncestors(full,issues,validatedAncestors);
                     Collect(full,observations,issues);
                 }
             }
@@ -89,8 +94,9 @@ namespace Ycsz {
                 scanned++;
                 if(item.ReparsePoint) issues.Add("重解析点:"+item.Path);
                 if(!item.Readable) issues.Add("无法读取文件身份:"+item.Path);
+                if(item.Readable && !item.AttributesConsistent) issues.Add("路径属性与句柄属性不一致:"+item.Path);
                 if(item.Readable && !item.IsDirectory && item.LinkCount>1) issues.Add("文件存在多个硬链接:"+item.Path);
-                if(!item.Readable || item.ReparsePoint) continue;
+                if(!item.Readable || item.ReparsePoint || !item.AttributesConsistent) continue;
                 string key=item.VolumeSerial.ToString("X8")+":"+item.FileIndex.ToString("X16");
                 string previous;
                 if(identities.TryGetValue(key,out previous) && !String.Equals(previous,item.Path,StringComparison.OrdinalIgnoreCase)) {
@@ -103,10 +109,13 @@ namespace Ycsz {
 
         static void Collect(string root,IList<SelfProtectionFileIdentityObservation> observations,IList<string> issues) {
             var pending=new Stack<string>(); pending.Push(root);
+            bool first=true;
             while(pending.Count>0) {
                 string current=pending.Pop(); bool isDirectory;
                 SelfProtectionFileIdentityObservation observation=ReadIdentity(current,out isDirectory);
                 observations.Add(observation);
+                if(first && observation.Readable && !isDirectory) issues.Add("保护根不是目录:"+current);
+                first=false;
                 if(!isDirectory || observation.ReparsePoint || !observation.Readable) continue;
                 string[] entries;
                 try { entries=Directory.GetFileSystemEntries(current); }
@@ -115,20 +124,48 @@ namespace Ycsz {
             }
         }
 
+        static void ValidateAncestors(string root,IList<string> issues,ISet<string> validated) {
+            string current=root;
+            while(true) {
+                DirectoryInfo parent;
+                try { parent=Directory.GetParent(current); }
+                catch(Exception e) { issues.Add("无法解析保护根父目录:"+current+":"+e.Message); break; }
+                if(parent==null) break;
+                current=parent.FullName;
+                if(!validated.Add(current)) continue;
+                bool isDirectory;
+                SelfProtectionFileIdentityObservation observation=ReadIdentity(current,out isDirectory);
+                if(!observation.Readable) issues.Add("无法读取保护根父目录身份:"+current);
+                else if(observation.ReparsePoint) issues.Add("保护根父目录为重解析点:"+current);
+                else if(!observation.AttributesConsistent) issues.Add("保护根父目录属性不一致:"+current);
+                else if(!isDirectory) issues.Add("保护根父路径不是目录:"+current);
+            }
+        }
+
         static SelfProtectionFileIdentityObservation ReadIdentity(string path,out bool isDirectory) {
             isDirectory=false;
             var result=new SelfProtectionFileIdentityObservation { Path=path,Readable=false };
+            bool pathAttributesRead=false;
+            bool pathIsDirectory=false;
+            bool pathIsReparse=false;
             try {
                 FileAttributes attributes=File.GetAttributes(path);
-                isDirectory=(attributes&FileAttributes.Directory)!=0;
-                result.IsDirectory=isDirectory;
-                result.ReparsePoint=(attributes&FileAttributes.ReparsePoint)!=0;
-                if(result.ReparsePoint) { result.Readable=true; return result; }
-            } catch { result.Path=path; return result; }
+                pathAttributesRead=true;
+                pathIsDirectory=(attributes&FileAttributes.Directory)!=0;
+                pathIsReparse=(attributes&FileAttributes.ReparsePoint)!=0;
+            } catch { }
             using(var handle=CreateFile(path,0,FileShareRead|FileShareWrite|FileShareDelete,IntPtr.Zero,OpenExisting,FileFlagBackupSemantics|FileFlagOpenReparsePoint,IntPtr.Zero)) {
                 if(handle==null || handle.IsInvalid) return result;
                 ByHandleFileInformation information;
                 if(!GetFileInformationByHandle(handle,out information)) return result;
+                uint handleAttributes=information.FileAttributes;
+                bool handleIsDirectory=(handleAttributes&0x00000010u)!=0;
+                bool handleIsReparse=(handleAttributes&0x00000400u)!=0;
+                isDirectory=handleIsDirectory;
+                result.IsDirectory=handleIsDirectory;
+                result.ReparsePoint=handleIsReparse;
+                result.AttributesConsistent=!pathAttributesRead ||
+                    (pathIsDirectory==handleIsDirectory && pathIsReparse==handleIsReparse);
                 result.VolumeSerial=information.VolumeSerialNumber;
                 result.FileIndex=((ulong)information.FileIndexHigh<<32)|information.FileIndexLow;
                 result.LinkCount=information.NumberOfLinks;

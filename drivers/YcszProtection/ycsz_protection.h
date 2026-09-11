@@ -27,6 +27,17 @@ YcpProtectionIsActive(
     );
 
 BOOLEAN
+YcpProtectionIsInitializing(
+    VOID
+    );
+
+VOID
+YcpRecordInitializationStream(
+    _In_ PEPROCESS Requestor,
+    _In_ BOOLEAN Marked
+    );
+
+BOOLEAN
 YcpMaintenanceIsActive(
     VOID
     );

@@ -97,4 +97,24 @@ foreach ($stage in @('BeforeMutation','Install','Load','Activation','UnloadRefus
     if ($stage -eq 'RestoreFailure' -and !$scenario.RestoreFailed) { throw 'Restore failure was not retained as an explicit failure.' }
     $count++
 }
+
+function Invoke-ActivationBarrierCheck {
+    $state=[pscustomobject]@{ Phase='Idle'; Owner=0; Deadline=0; Marked=0; Failures=0 }
+    $state.Phase='Initializing'; $state.Owner=10; $state.Deadline=120
+    if ($state.Phase -ne 'Initializing') { throw 'Begin published Active before scan.' }
+    $product='\Device\Volume\Ycsz'
+    if (!('\Device\Volume\Ycsz\data'.StartsWith($product)) -or ('\Device\Volume\other'.StartsWith($product))) { throw 'Initialization namespace guard boundary is wrong.' }
+    $state.Marked=1; $state.Failures=1
+    if ($state.Failures -ne 0 -or $state.Marked -lt 1) { $commitAllowed=$false } else { $commitAllowed=$true }
+    if ($commitAllowed -or $state.Phase -eq 'Active') { throw 'Scan failure still allowed Active.' }
+    $state.Phase='Idle'; $state.Owner=0; $state.Marked=0; $state.Failures=0
+    $state.Phase='Initializing'; $state.Owner=10; $state.Marked=1
+    if ($state.Failures -ne 0 -or $state.Marked -lt 1) { throw 'Complete scan was not commit-ready.' }
+    $state.Phase='Active'
+    if ($state.Phase -ne 'Active') { throw 'Complete scan did not commit Active.' }
+    if ($state.Phase -eq 'Active' -and $state.Owner -ne 10) { throw 'Stable Active owner was changed.' }
+    return $true
+}
+Invoke-ActivationBarrierCheck | Out-Null
+$count++
 Write-Output "PASS $count pure protection install/remove input checks; no service, driver or system configuration changed."

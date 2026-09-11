@@ -79,3 +79,8 @@ with tempfile.TemporaryDirectory(prefix='ycsz-control-test-') as tmp:
     subprocess.run(compiler + ['-std=c11', '-Wall', '-Wextra', '-Werror',
                               str(work / 'namespace_boundary.c'), '-o', str(work / 'namespace-test')], check=True)
     subprocess.run([str(work / 'namespace-test')], check=True)
+
+    shutil.copy2(driver / 'tests/initialization_lifecycle.c', work)
+    subprocess.run(compiler + ['-std=c11', '-Wall', '-Wextra', '-Werror',
+                              str(work / 'initialization_lifecycle.c'), '-o', str(work / 'initialization-test')], check=True)
+    subprocess.run([str(work / 'initialization-test')], check=True)

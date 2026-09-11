@@ -11,6 +11,11 @@ YcpFileSystemControlRequestsMutation(
     _In_ PFLT_CALLBACK_DATA Data
     );
 
+static BOOLEAN
+YcpCreateChangesNamespace(
+    _In_ PFLT_CALLBACK_DATA Data
+    );
+
 static VOID
 YcpStreamContextCleanup(
     _In_ PFLT_CONTEXT Context,
@@ -128,6 +133,9 @@ YcpIsNamespaceMutation(
     if (Data->Iopb->MajorFunction == IRP_MJ_FILE_SYSTEM_CONTROL) {
         return YcpFileSystemControlRequestsMutation(Data);
     }
+    if (Data->Iopb->MajorFunction == IRP_MJ_CREATE) {
+        return YcpCreateChangesNamespace(Data);
+    }
     if (Data->Iopb->MajorFunction != IRP_MJ_SET_INFORMATION) {
         return FALSE;
     }
@@ -163,6 +171,26 @@ YcpCreateRequestsMutation(
     return disposition == FILE_OVERWRITE ||
            disposition == FILE_OVERWRITE_IF ||
            disposition == FILE_SUPERSEDE;
+}
+
+static BOOLEAN
+YcpCreateChangesNamespace(
+    _In_ PFLT_CALLBACK_DATA Data
+    )
+{
+    ULONG options;
+    ULONG disposition;
+
+    if (Data == NULL || Data->Iopb == NULL || Data->Iopb->MajorFunction != IRP_MJ_CREATE) {
+        return FALSE;
+    }
+    options = Data->Iopb->Parameters.Create.Options;
+    disposition = (options >> 24) & 0xff;
+    return (options & FILE_DELETE_ON_CLOSE) != 0 ||
+        disposition == FILE_CREATE ||
+        disposition == FILE_OPEN_IF ||
+        disposition == FILE_OVERWRITE_IF ||
+        disposition == FILE_SUPERSEDE;
 }
 
 static BOOLEAN
@@ -313,11 +341,15 @@ YcpPreOperationFile(
     BOOLEAN trustedWriter;
     BOOLEAN streamProtected;
     BOOLEAN namespaceAncestor = FALSE;
+    BOOLEAN active;
+    BOOLEAN initializing;
     FLT_PREOP_CALLBACK_STATUS allowedStatus = FLT_PREOP_SUCCESS_NO_CALLBACK;
 
     if (CompletionContext != NULL) *CompletionContext = NULL;
 
-    if (Data == NULL || Data->Iopb == NULL || !YcpProtectionIsActive()) {
+    active = YcpProtectionIsActive();
+    initializing = YcpProtectionIsInitializing();
+    if (Data == NULL || Data->Iopb == NULL || (!active && !initializing)) {
         return allowedStatus;
     }
 
@@ -383,6 +415,17 @@ YcpPreOperationFile(
     // Moving or redirecting a parent invalidates both protected root paths.
     // This applies only to namespace mutations, never ordinary parent I/O.
     if (namespaceAncestor) return YcpDenyMutation(Data);
+    // During initialization, namespace changes are blocked only when the
+    // resolved source, stream, destination, or strict ancestor is part of
+    // the confirmed product namespace. Unknown/unresolved paths continue to
+    // pass so this phase cannot become a global filesystem denial.
+    if (initializing && YcpIsNamespaceMutation(Data)) {
+        if ((sourceResolved && sourceProtected) || streamProtected ||
+            (destinationResolved && destinationProtected)) {
+            return YcpDenyMutation(Data);
+        }
+        return allowedStatus;
+    }
     trustedWriter = YcpIsTrustedWriter(Data);
     if (trustedWriter && !YcpIsNamespaceMutation(Data)) return allowedStatus;
     // Never deny unrelated or unresolved filesystem operations globally.
@@ -417,7 +460,8 @@ YcpPostOperationFile(
     if ((Flags & FLTFL_POST_OPERATION_DRAINING) != 0) return FLT_POSTOP_FINISHED_PROCESSING;
 
     if (Data == NULL || FltObjects == NULL ||
-        !NT_SUCCESS(Data->IoStatus.Status) || Data->IoStatus.Status == STATUS_REPARSE || !YcpProtectionIsActive()) {
+        !NT_SUCCESS(Data->IoStatus.Status) || Data->IoStatus.Status == STATUS_REPARSE ||
+        (!YcpProtectionIsActive() && !YcpProtectionIsInitializing())) {
         return FLT_POSTOP_FINISHED_PROCESSING;
     }
     status = FltGetFileNameInformation(
@@ -427,7 +471,10 @@ YcpPostOperationFile(
     if (NT_SUCCESS(status) && nameInformation != NULL) {
         status = FltParseFileNameInformation(nameInformation);
         if (NT_SUCCESS(status) && YcpShouldProtectFile(&nameInformation->Name)) {
-            (void)YcpMarkProtectedStream(FltObjects);
+            BOOLEAN marked = YcpMarkProtectedStream(FltObjects);
+            if (YcpProtectionIsInitializing() && YcpIsTrustedWriter(Data)) {
+                YcpRecordInitializationStream(FltGetRequestorProcess(Data), marked);
+            }
         }
         FltReleaseFileNameInformation(nameInformation);
     }

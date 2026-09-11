@@ -12,19 +12,22 @@ namespace Ycsz {
         const uint GenericRead=0x80000000u, GenericWrite=0x40000000u;
         const uint FileShareRead=0x00000001u, FileShareWrite=0x00000002u;
         const uint OpenExisting=3u;
-        const uint IoctlActivate=0x8000e000u;
+        const uint IoctlBeginInitialize=0x8000e000u;
         const uint IoctlEnterMaintenance=0x8000e004u;
         const uint IoctlExitMaintenance=0x8000e008u;
         const uint IoctlQueryStatus=0x8000e00cu;
         const uint IoctlPrepareUnload=0x8000e010u;
         const uint IoctlRegisterTray=0x8000e014u;
         const uint IoctlUnregisterTray=0x8000e018u;
+        const uint IoctlCommitInitialize=0x8000e01cu;
+        const uint IoctlAbortInitialize=0x8000e020u;
 
         const uint StateActive=0x00000001u;
         const uint StateProcessCallback=0x00000002u;
         const uint StateFileFilter=0x00000004u;
         const uint StateMaintenance=0x00000008u, StateUnloadPrepared=0x00000010u;
         const uint StateTrayRegistered=0x00000020u, StateDataRoot=0x00000040u;
+        const uint StateInitializing=0x00000080u;
         const uint StateError=0x80000000u;
         const int MaxPathChars=512;
         readonly string protectedDataRoot;
@@ -55,6 +58,14 @@ namespace Ycsz {
             public NativeHeader Header;
             [MarshalAs(UnmanagedType.ByValArray, SizeConst=16, ArraySubType=UnmanagedType.U1)] public byte[] LeaseId;
         }
+        [StructLayout(LayoutKind.Sequential, Pack=8)] struct NativeInitializeCommitRequest {
+            public NativeHeader Header; public uint ExpectedEntries; public uint Reserved;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst=16, ArraySubType=UnmanagedType.U1)] public byte[] InstanceNonce;
+        }
+        [StructLayout(LayoutKind.Sequential, Pack=8)] struct NativeInitializeAbortRequest {
+            public NativeHeader Header;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst=16, ArraySubType=UnmanagedType.U1)] public byte[] InstanceNonce;
+        }
         [StructLayout(LayoutKind.Sequential, Pack=8)] struct NativeStatus {
             public uint Size; public uint Version; public uint State; public uint LastStatus;
             public uint TargetPid; public uint TargetSessionId; public long TargetCreateTime100ns; public long MaintenanceExpiresAt100ns;
@@ -64,6 +75,7 @@ namespace Ycsz {
             [MarshalAs(UnmanagedType.ByValArray, SizeConst=MaxPathChars, ArraySubType=UnmanagedType.U2)] public ushort[] ImagePath;
             [MarshalAs(UnmanagedType.ByValArray, SizeConst=MaxPathChars, ArraySubType=UnmanagedType.U2)] public ushort[] ProtectedRoot;
             [MarshalAs(UnmanagedType.ByValArray, SizeConst=MaxPathChars, ArraySubType=UnmanagedType.U2)] public ushort[] ProtectedDataRoot;
+            public uint InitializationExpectedEntries; public uint InitializationMarkedEntries; public uint InitializationFailures; public uint InitializationReserved; public long InitializationExpiresAt100ns;
             public NativeIdentity TrayIdentity;
         }
 
@@ -80,9 +92,13 @@ namespace Ycsz {
         public static int TrayRequestSize { get { return Marshal.SizeOf(typeof(NativeTrayRequest)); } }
         public static int MaintenanceRequestSize { get { return Marshal.SizeOf(typeof(NativeMaintenanceRequest)); } }
         public static int UnloadRequestSize { get { return Marshal.SizeOf(typeof(NativeUnloadRequest)); } }
+        public static int InitializeCommitRequestSize { get { return Marshal.SizeOf(typeof(NativeInitializeCommitRequest)); } }
+        public static int InitializeAbortRequestSize { get { return Marshal.SizeOf(typeof(NativeInitializeAbortRequest)); } }
         public static uint PrepareUnloadIoctl { get { return IoctlPrepareUnload; } }
         public static int StatusSize { get { return Marshal.SizeOf(typeof(NativeStatus)); } }
-        public static uint ActivateIoctl { get { return IoctlActivate; } }
+        public static uint BeginInitializeIoctl { get { return IoctlBeginInitialize; } }
+        public static uint CommitInitializeIoctl { get { return IoctlCommitInitialize; } }
+        public static uint AbortInitializeIoctl { get { return IoctlAbortInitialize; } }
         public static uint EnterMaintenanceIoctl { get { return IoctlEnterMaintenance; } }
         public static uint ExitMaintenanceIoctl { get { return IoctlExitMaintenance; } }
         public static uint QueryStatusIoctl { get { return IoctlQueryStatus; } }
@@ -93,9 +109,16 @@ namespace Ycsz {
             if(request==null) throw new ArgumentNullException("request");
             request.Validate(DateTime.UtcNow);
             using(var device=OpenDevice()) {
-                if(request.Operation==SelfProtectionOperation.Activate) {
+                if(request.Operation==SelfProtectionOperation.BeginInitialize) {
                     var native=BuildActivate(request);
-                    SendNoOutput(device,IoctlActivate,ref native);
+                    SendNoOutput(device,IoctlBeginInitialize,ref native);
+                } else if(request.Operation==SelfProtectionOperation.CommitInitialize) {
+                    var native=BuildInitializeCommit(request);
+                    SendNoOutput(device,IoctlCommitInitialize,ref native);
+                } else if(request.Operation==SelfProtectionOperation.AbortInitialize) {
+                    var native=BuildInitializeAbort(request);
+                    SendNoOutput(device,IoctlAbortInitialize,ref native);
+                    return new SelfProtectionReply { Accepted=true,DriverLoaded=false,Capabilities=SelfProtectionCapability.None,Phase=SelfProtectionPhase.Unavailable };
                 } else if(request.Operation==SelfProtectionOperation.RegisterTray || request.Operation==SelfProtectionOperation.UnregisterTray) {
                     var native=new NativeTrayRequest { Header=BuildHeader(request.RequestId,TrayRequestSize),Identity=BuildIdentity(request.TrayIdentity,ToKernelPath(request.TrayIdentity.ImagePath)) };
                     SendNoOutput(device,request.Operation==SelfProtectionOperation.RegisterTray?IoctlRegisterTray:IoctlUnregisterTray,ref native);
@@ -131,6 +154,22 @@ namespace Ycsz {
                 Identity=BuildIdentity(request.Identity,image),
                 ProtectedRoot=ToFixedWchar(root),
                 ProtectedDataRoot=ToFixedWchar(ToKernelPath(dataRoot))
+            };
+        }
+
+        NativeInitializeCommitRequest BuildInitializeCommit(SelfProtectionRequest request) {
+            return new NativeInitializeCommitRequest {
+                Header=BuildHeader(request.RequestId,Marshal.SizeOf(typeof(NativeInitializeCommitRequest))),
+                ExpectedEntries=checked((uint)request.InitializationExpectedEntries),
+                Reserved=0,
+                InstanceNonce=FromHex(request.Identity.InstanceNonce,16)
+            };
+        }
+
+        NativeInitializeAbortRequest BuildInitializeAbort(SelfProtectionRequest request) {
+            return new NativeInitializeAbortRequest {
+                Header=BuildHeader(request.RequestId,Marshal.SizeOf(typeof(NativeInitializeAbortRequest))),
+                InstanceNonce=FromHex(request.Identity.InstanceNonce,16)
             };
         }
 
@@ -193,10 +232,13 @@ namespace Ycsz {
             try { Marshal.Copy(bytes,0,buffer,bytes.Length); status=(NativeStatus)Marshal.PtrToStructure(buffer,typeof(NativeStatus)); }
             finally { Marshal.FreeHGlobal(buffer); }
             if(status.Size!=StatusSize || status.Version!=SelfProtectionProtocol.Version ||
-                (status.State&~(StateActive|StateProcessCallback|StateFileFilter|StateMaintenance|StateUnloadPrepared|StateTrayRegistered|StateDataRoot|StateError))!=0)
+                (status.State&~(StateActive|StateProcessCallback|StateFileFilter|StateMaintenance|StateUnloadPrepared|StateTrayRegistered|StateDataRoot|StateInitializing|StateError))!=0)
                 throw new InvalidDataException("驱动应答协议不匹配");
-            if(status.LastStatus!=0 || (status.State&StateError)!=0 || (status.State&StateActive)==0)
-                throw new InvalidDataException("驱动未确认激活成功");
+            bool initializing=(status.State&StateInitializing)!=0;
+            bool active=(status.State&StateActive)!=0;
+            if(status.LastStatus!=0 || (status.State&StateError)!=0 ||
+                (request.Operation==SelfProtectionOperation.BeginInitialize ? (!initializing || active) : (!active || initializing)))
+                throw new InvalidDataException("驱动未确认请求所需状态");
             var identity=request.Identity;
             if(status.TargetPid!=identity.ProcessId || status.TargetSessionId!=(uint)identity.SessionId || status.TargetCreateTime100ns!=identity.StartTimeUtcFileTime ||
                 !EqualBytes(status.ImageSha256,FromHex(identity.ImageSha256,32)) || !EqualBytes(status.InstanceNonce,FromHex(identity.InstanceNonce,16)) ||
@@ -221,9 +263,14 @@ namespace Ycsz {
                 throw new InvalidDataException("驱动尚未退出维护状态");
             }
             SelfProtectionCapability capabilities=SelfProtectionCapability.None;
-            if(!maintenance && (status.State&StateProcessCallback)!=0) capabilities|=SelfProtectionCapability.ProcessTermination;
-            if((status.State&StateFileFilter)!=0) capabilities|=SelfProtectionCapability.FileMutation;
-            return new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=capabilities };
+            if(!initializing && !maintenance && (status.State&StateProcessCallback)!=0) capabilities|=SelfProtectionCapability.ProcessTermination;
+            if(!initializing && (status.State&StateFileFilter)!=0) capabilities|=SelfProtectionCapability.FileMutation;
+            return new SelfProtectionReply {
+                Accepted=true,
+                DriverLoaded=true,
+                Capabilities=capabilities,
+                Phase=initializing?SelfProtectionPhase.Initializing:(maintenance?SelfProtectionPhase.Maintenance:SelfProtectionPhase.Active)
+            };
         }
 
         static bool StatusIdentityMatches(NativeIdentity status,ProtectionIdentity expected) {

@@ -50,7 +50,13 @@ function Invoke-StaticChecks {
         if (!(Test-Path -LiteralPath $path -PathType Leaf)) { Add-Result 'static source inventory' 'FAIL' "missing $path"; return }
     }
     $checks = @(
-        @('protocol version 2', $protocol, 'YCP_PROTOCOL_VERSION              2u'),
+        @('protocol version 3', $protocol, 'YCP_PROTOCOL_VERSION              3u'),
+        @('initialization timeout', $protocol, 'YCP_INITIALIZATION_TIMEOUT_SECONDS'),
+        @('begin initialization IOCTL', $protocol, 'IOCTL_YCP_BEGIN_INITIALIZE'),
+        @('commit initialization IOCTL', $protocol, 'IOCTL_YCP_COMMIT_INITIALIZE'),
+        @('abort initialization IOCTL', $protocol, 'IOCTL_YCP_ABORT_INITIALIZE'),
+        @('initialization commit request', $protocol, 'YCP_INITIALIZE_COMMIT_REQUEST'),
+        @('initializing state bit', $protocol, 'YCP_STATE_INITIALIZING'),
         @('tray register IOCTL', $protocol, 'IOCTL_YCP_REGISTER_TRAY'),
         @('dual protected roots', $protocol, 'ProtectedDataRoot'),
         @('tray identity in status', $protocol, 'TrayIdentity'),
@@ -58,6 +64,11 @@ function Invoke-StaticChecks {
         @('trusted data root registry', $kernel, 'TrustedDataRoot'),
         @('real tray process validation', $kernel, 'PsLookupProcessByProcessId'),
         @('trusted writer gate', $kernel, 'YcpIsTrustedWriter'),
+        @('initialization state query', $kernel, 'YcpProtectionIsInitializing'),
+        @('initialization stream accounting', $kernel, 'YcpRecordInitializationStream'),
+        @('initialization commit handler', $kernel, 'YcpCommitInitialization'),
+        @('initialization abort handler', $kernel, 'YcpAbortInitialization'),
+        @('initialization failure accounting', $kernel, 'InitializationFailures'),
         @('stream identity context', $filter, 'YCP_STREAM_CONTEXT'),
         @('stream identity query', $filter, 'FileInternalInformation'),
         @('stream context lookup', $filter, 'FltGetStreamContext'),
@@ -66,8 +77,13 @@ function Invoke-StaticChecks {
         @('filter reference release', $filter, 'FltObjectDereference'),
         @('paging write compatibility', $filter, 'IRP_PAGING_IO'),
         @('reparse gate', $filter, 'FSCTL_SET_REPARSE_POINT'),
-        @('v2 user ABI', $transport, 'StateDataRoot'),
+        @('v3 user ABI', $transport, 'StateDataRoot'),
+        @('begin initialize user transport', $transport, 'BeginInitialize'),
+        @('commit initialize user transport', $transport, 'CommitInitialize'),
+        @('abort initialize user transport', $transport, 'AbortInitialize'),
         @('activation identity preflight', $preflight, 'GetFileInformationByHandle'),
+        @('handle attributes authority', $preflight, 'FileAttributes'),
+        @('path-handle consistency gate', $preflight, 'AttributesConsistent'),
         @('mapped-write status is explicit', $core, 'MappingWritebackConditionMet'),
         @('actual activation probe', $app, '--protection-status'),
         @('CAT member validation', $install, 'Assert-ProtectionCatalogMembers'),
@@ -132,7 +148,7 @@ function Require-DynamicPreconditions {
     $image = [IO.Path]::GetFullPath($ServiceImagePath)
     if ($image -notlike ($fixture.TrimEnd('\') + '\*')) { throw 'ServiceImagePath is outside the disposable fixture.' }
     $probe = & $image --protection-status 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) { throw "The harness is Running but v2 activation was not confirmed: $probe" }
+    if ($LASTEXITCODE -ne 0) { throw "The harness is Running but v3 activation was not confirmed: $probe" }
 }
 
 function Invoke-DynamicChecks {

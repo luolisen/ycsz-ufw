@@ -12,9 +12,10 @@
 extern "C" {
 #endif
 
-#define YCP_PROTOCOL_VERSION              2u
+#define YCP_PROTOCOL_VERSION              3u
 #define YCP_MAX_PATH_CHARS               512u
 #define YCP_MAX_LEASE_SECONDS            900u
+#define YCP_INITIALIZATION_TIMEOUT_SECONDS 120u
 #define YCP_IMAGE_NAME                   L"Ycsz.exe"
 #define YCP_SERVICE_NAME                 L"YcszFirewall"
 #define YCP_DEVICE_DOS_NAME              L"\\DosDevices\\YcszProtection"
@@ -23,7 +24,7 @@ extern "C" {
 #define YCP_DEVICE_TYPE                  0x8000u
 #define YCP_IOCTL_FUNCTION_BASE          0x800u
 
-#define IOCTL_YCP_ACTIVATE \
+#define IOCTL_YCP_BEGIN_INITIALIZE \
     CTL_CODE(YCP_DEVICE_TYPE, YCP_IOCTL_FUNCTION_BASE + 0, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
 #define IOCTL_YCP_ENTER_MAINTENANCE \
     CTL_CODE(YCP_DEVICE_TYPE, YCP_IOCTL_FUNCTION_BASE + 1, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
@@ -37,6 +38,10 @@ extern "C" {
     CTL_CODE(YCP_DEVICE_TYPE, YCP_IOCTL_FUNCTION_BASE + 5, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
 #define IOCTL_YCP_UNREGISTER_TRAY \
     CTL_CODE(YCP_DEVICE_TYPE, YCP_IOCTL_FUNCTION_BASE + 6, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
+#define IOCTL_YCP_COMMIT_INITIALIZE \
+    CTL_CODE(YCP_DEVICE_TYPE, YCP_IOCTL_FUNCTION_BASE + 7, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
+#define IOCTL_YCP_ABORT_INITIALIZE \
+    CTL_CODE(YCP_DEVICE_TYPE, YCP_IOCTL_FUNCTION_BASE + 8, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
 
 #define YCP_STATE_ACTIVE                 0x00000001u
 #define YCP_STATE_PROCESS_CALLBACK       0x00000002u
@@ -45,6 +50,7 @@ extern "C" {
 #define YCP_STATE_UNLOAD_PREPARED       0x00000010u
 #define YCP_STATE_TRAY_REGISTERED        0x00000020u
 #define YCP_STATE_DATA_ROOT              0x00000040u
+#define YCP_STATE_INITIALIZING           0x00000080u
 #define YCP_STATE_ERROR                  0x80000000u
 
 typedef struct _YCP_CONTROL_HEADER {
@@ -85,6 +91,18 @@ typedef struct _YCP_UNLOAD_REQUEST {
     UCHAR LeaseId[16];
 } YCP_UNLOAD_REQUEST;
 
+typedef struct _YCP_INITIALIZE_COMMIT_REQUEST {
+    YCP_CONTROL_HEADER Header;
+    ULONG ExpectedEntries;
+    ULONG Reserved;
+    UCHAR InstanceNonce[16];
+} YCP_INITIALIZE_COMMIT_REQUEST;
+
+typedef struct _YCP_INITIALIZE_ABORT_REQUEST {
+    YCP_CONTROL_HEADER Header;
+    UCHAR InstanceNonce[16];
+} YCP_INITIALIZE_ABORT_REQUEST;
+
 typedef struct _YCP_STATUS {
     ULONG Size;
     ULONG Version;
@@ -100,6 +118,11 @@ typedef struct _YCP_STATUS {
     WCHAR ImagePath[YCP_MAX_PATH_CHARS];
     WCHAR ProtectedRoot[YCP_MAX_PATH_CHARS];
     WCHAR ProtectedDataRoot[YCP_MAX_PATH_CHARS];
+    ULONG InitializationExpectedEntries;
+    ULONG InitializationMarkedEntries;
+    ULONG InitializationFailures;
+    ULONG InitializationReserved;
+    LONGLONG InitializationExpiresAt100ns;
     YCP_PROCESS_IDENTITY TrayIdentity;
 } YCP_STATUS;
 

@@ -5,9 +5,9 @@ using System.Security.Cryptography;
 
 namespace Ycsz {
     public static class SelfProtectionProtocol {
-        public const int Version=2;
+        public const int Version=3;
         public const string DevicePath=@"\\.\YcszProtection";
-        public const string ControlPipeName="YcszFirewall.SelfProtection.v2";
+        public const string ControlPipeName="YcszFirewall.SelfProtection.v3";
     }
 
     [Flags]
@@ -21,6 +21,7 @@ namespace Ycsz {
     public enum SelfProtectionState {
         Unavailable,
         Starting,
+        Initializing,
         Degraded,
         Active,
         Maintenance,
@@ -28,12 +29,21 @@ namespace Ycsz {
     }
 
     public enum SelfProtectionOperation {
-        Activate,
+        BeginInitialize,
+        CommitInitialize,
+        AbortInitialize,
         EnterMaintenance,
         ExitMaintenance,
         PrepareUnload,
         RegisterTray,
         UnregisterTray
+    }
+
+    public enum SelfProtectionPhase {
+        Active,
+        Initializing,
+        Maintenance,
+        Unavailable
     }
 
     public sealed class ProtectionIdentity {
@@ -90,15 +100,22 @@ namespace Ycsz {
         public string ProtectedDataRoot;
         public string MaintenanceLeaseId;
         public long MaintenanceExpiresUtcFileTime;
+        public int InitializationExpectedEntries;
 
         public void Validate(DateTime utcNow) {
             if(Version!=CurrentVersion || String.IsNullOrWhiteSpace(RequestId) || RequestId.Length!=32) throw new InvalidDataException("自保护请求版本或 ID 无效");
             Guid ignored; if(!Guid.TryParseExact(RequestId,"N",out ignored)) throw new InvalidDataException("自保护请求 ID 无效");
             if(Identity==null) throw new InvalidDataException("缺少自保护进程身份");
             Identity.Validate();
-            if(Operation!=SelfProtectionOperation.Activate && Operation!=SelfProtectionOperation.EnterMaintenance && Operation!=SelfProtectionOperation.ExitMaintenance && Operation!=SelfProtectionOperation.PrepareUnload && Operation!=SelfProtectionOperation.RegisterTray && Operation!=SelfProtectionOperation.UnregisterTray) throw new InvalidDataException("自保护操作无效");
+            if(Operation!=SelfProtectionOperation.BeginInitialize && Operation!=SelfProtectionOperation.CommitInitialize && Operation!=SelfProtectionOperation.AbortInitialize && Operation!=SelfProtectionOperation.EnterMaintenance && Operation!=SelfProtectionOperation.ExitMaintenance && Operation!=SelfProtectionOperation.PrepareUnload && Operation!=SelfProtectionOperation.RegisterTray && Operation!=SelfProtectionOperation.UnregisterTray) throw new InvalidDataException("自保护操作无效");
             if(Identity.SessionId!=0) throw new InvalidDataException("服务身份必须属于 session 0");
-            if(Operation==SelfProtectionOperation.Activate) { if(MaintenanceLeaseId!=null || MaintenanceExpiresUtcFileTime!=0 || TrayIdentity!=null) throw new InvalidDataException("激活请求不得携带维护租约或托盘身份"); return; }
+            if(Operation==SelfProtectionOperation.BeginInitialize || Operation==SelfProtectionOperation.CommitInitialize || Operation==SelfProtectionOperation.AbortInitialize) {
+                if(MaintenanceLeaseId!=null || MaintenanceExpiresUtcFileTime!=0 || TrayIdentity!=null) throw new InvalidDataException("初始化请求不得携带维护租约或托盘身份");
+                if(Operation==SelfProtectionOperation.CommitInitialize && InitializationExpectedEntries<=0) throw new InvalidDataException("初始化提交必须携带扫描项数");
+                if(Operation!=SelfProtectionOperation.CommitInitialize && InitializationExpectedEntries!=0) throw new InvalidDataException("非提交初始化请求不得携带扫描项数");
+                return;
+            }
+            if(InitializationExpectedEntries!=0) throw new InvalidDataException("维护请求不得携带初始化扫描项数");
             if(Operation==SelfProtectionOperation.RegisterTray || Operation==SelfProtectionOperation.UnregisterTray) {
                 if(!String.IsNullOrWhiteSpace(MaintenanceLeaseId) || MaintenanceExpiresUtcFileTime!=0 || TrayIdentity==null) throw new InvalidDataException("托盘登记请求字段无效");
                 TrayIdentity.Validate(); if(TrayIdentity.SessionId<=0) throw new InvalidDataException("托盘必须属于用户会话"); return;
@@ -121,6 +138,10 @@ namespace Ycsz {
             var request=new SelfProtectionRequest { RequestId=Guid.NewGuid().ToString("N"),Operation=operation,Identity=serviceIdentity,TrayIdentity=trayIdentity };
             request.Validate(validationUtc.ToUniversalTime()); return request;
         }
+        public static SelfProtectionRequest CreateCommit(ProtectionIdentity identity,int expectedEntries,DateTime validationUtc) {
+            var request=new SelfProtectionRequest { RequestId=Guid.NewGuid().ToString("N"),Operation=SelfProtectionOperation.CommitInitialize,Identity=identity,InitializationExpectedEntries=expectedEntries };
+            request.Validate(validationUtc.ToUniversalTime()); return request;
+        }
     }
 
     public sealed class SelfProtectionReply {
@@ -128,10 +149,12 @@ namespace Ycsz {
         public bool DriverLoaded;
         public SelfProtectionCapability Capabilities;
         public string Error;
+        public SelfProtectionPhase Phase=SelfProtectionPhase.Active;
 
         public void Validate() {
             const SelfProtectionCapability all=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation|SelfProtectionCapability.ServiceStop;
             if((Capabilities&~all)!=0 || (!DriverLoaded && Capabilities!=SelfProtectionCapability.None)) throw new InvalidDataException("自保护驱动能力报告无效");
+            if(Phase<SelfProtectionPhase.Active || Phase>SelfProtectionPhase.Unavailable) throw new InvalidDataException("自保护驱动阶段报告无效");
         }
     }
 
@@ -161,6 +184,7 @@ namespace Ycsz {
             if(State==SelfProtectionState.Maintenance) return "内核自保护维护窗口已授权（最长 15 分钟；安装目录与 ProgramData 文件过滤仍在）"+(MappingWritebackConditionMet?"":"；可写映射写回条件未满足");
             if(State==SelfProtectionState.Degraded) return "内核自保护不完整，未满足全部保护能力";
             if(State==SelfProtectionState.Starting) return "内核自保护正在初始化";
+            if(State==SelfProtectionState.Initializing) return "内核自保护正在扫描并确认保护文件";
             if(State==SelfProtectionState.Failed) return "内核自保护未启用："+(Failure??"驱动通信失败");
             return "内核自保护未启用："+(Failure??"驱动未加载");
         }
@@ -190,16 +214,38 @@ namespace Ycsz {
 
         public bool Activate(DateTime utcNow) {
             lock(sync) {
+                if(status.State==SelfProtectionState.Active) return true;
+                if(status.State==SelfProtectionState.Maintenance || status.State==SelfProtectionState.Initializing) return false;
                 status.State=SelfProtectionState.Starting; status.Failure=null;
+                bool initializationStarted=false;
                 try {
-                    SelfProtectionPreflightResult result=preflight==null?null:preflight();
-                    if(preflight!=null && (result==null || !result.Passed)) { status.MappingWritebackConditionMet=false; Fail(result==null?"文件身份 preflight 未返回结果":result.Summary); return false; }
+                    if(preflight==null) { Fail("激活前必须配置文件身份 preflight"); return false; }
+                    SelfProtectionPreflightResult first=preflight==null?null:preflight();
+                    if(preflight!=null && (first==null || !first.Passed)) { status.MappingWritebackConditionMet=false; Fail(first==null?"文件身份 preflight 未返回结果":first.Summary); return false; }
                     registeredIdentity=identityFactory(); registeredTray=null;
-                    bool accepted=ApplyReply(transport.Send(SelfProtectionRequest.Create(SelfProtectionOperation.Activate,registeredIdentity,null,DateTime.MinValue,utcNow)));
-                    status.MappingWritebackConditionMet=accepted && result!=null && result.MappingWritebackConditionMet;
+                    initializationStarted=true;
+                    var beginReply=transport.Send(SelfProtectionRequest.Create(SelfProtectionOperation.BeginInitialize,registeredIdentity,null,DateTime.MinValue,utcNow));
+                    if(!ApplyInitializingReply(beginReply)) {
+                        TryAbortInitialization(utcNow);
+                        initializationStarted=false;
+                        Fail(beginReply==null?"驱动没有返回初始化状态":beginReply.Error??"驱动未进入初始化阶段");
+                        return false;
+                    }
+                    SelfProtectionPreflightResult second=preflight==null?null:preflight();
+                    if(preflight!=null && (second==null || !second.Passed)) {
+                        TryAbortInitialization(utcNow);
+                        Fail(second==null?"第二次文件身份 preflight 未返回结果":second.Summary);
+                        return false;
+                    }
+                    var commitReply=transport.Send(SelfProtectionRequest.CreateCommit(registeredIdentity,second==null?0:second.ScannedEntries,utcNow));
+                    bool commitAccepted=commitReply!=null && commitReply.Accepted && commitReply.DriverLoaded && commitReply.Phase==SelfProtectionPhase.Active;
+                    bool accepted=ApplyActiveReply(commitReply);
+                    if(!commitAccepted) TryAbortInitialization(utcNow);
+                    status.MappingWritebackConditionMet=accepted && second!=null && second.MappingWritebackConditionMet;
+                    initializationStarted=false;
                     return accepted;
                 }
-                catch(Exception e) { Fail(e.Message); return false; }
+                catch(Exception e) { if(initializationStarted) TryAbortInitialization(utcNow); Fail(e.Message); return false; }
             }
         }
 
@@ -293,6 +339,23 @@ namespace Ycsz {
                 if(!reply.Accepted || !reply.DriverLoaded) { Fail(reply.Error??"驱动拒绝关闭维护窗口"); return false; }
                 status.DriverLoaded=true; status.Capabilities=reply.Capabilities; status.State=CapabilitiesComplete()?SelfProtectionState.Active:SelfProtectionState.Degraded; status.MaintenanceLeaseId=null; status.MaintenanceUntilUtc=DateTime.MinValue; maintenanceSession=null; status.Failure=null; return true;
             } catch(Exception e) { Fail(e.Message); return false; }
+        }
+        bool ApplyInitializingReply(SelfProtectionReply reply) {
+            if(reply==null) return false;
+            reply.Validate();
+            if(!reply.Accepted || !reply.DriverLoaded || reply.Capabilities!=SelfProtectionCapability.None || reply.Phase!=SelfProtectionPhase.Initializing) return false;
+            status.DriverLoaded=true; status.Capabilities=SelfProtectionCapability.None; status.State=SelfProtectionState.Initializing; status.Failure=null; return true;
+        }
+        bool ApplyActiveReply(SelfProtectionReply reply) {
+            if(reply==null) { Fail("驱动没有返回状态"); return false; }
+            reply.Validate();
+            if(!reply.Accepted || !reply.DriverLoaded || reply.Phase!=SelfProtectionPhase.Active) { Fail(reply.Error??"驱动未确认初始化提交"); return false; }
+            status.DriverLoaded=true; status.Capabilities=reply.Capabilities; status.State=CapabilitiesComplete()?SelfProtectionState.Active:SelfProtectionState.Degraded; status.MaintenanceLeaseId=null; status.MaintenanceUntilUtc=DateTime.MinValue; maintenanceSession=null; status.Failure=null; return status.State==SelfProtectionState.Active;
+        }
+        void TryAbortInitialization(DateTime utcNow) {
+            if(registeredIdentity==null) return;
+            try { transport.Send(SelfProtectionRequest.Create(SelfProtectionOperation.AbortInitialize,registeredIdentity,null,DateTime.MinValue,utcNow)); }
+            catch { }
         }
         bool ApplyReply(SelfProtectionReply reply) {
             if(reply==null) throw new InvalidDataException("驱动没有返回状态"); reply.Validate();

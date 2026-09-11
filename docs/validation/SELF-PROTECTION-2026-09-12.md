@@ -155,3 +155,15 @@
 - 分支 `codex/luna-full-delivery-20260912`，最终实现提交 `4f3d95f`；[GitHub Actions 运行 34654419246](https://github.com/luolisen/ycsz-ufw/actions/runs/34654419246) 成功。
 - 同一运行通过 WDK Release x64 编译、stamped INF、`InfVerif`、用户态 `68/68`、TLS `2/2`、合成网络 `9/9`、Windows PowerShell 脚本解析、静态驱动门禁和 46 项安装回滚输入检查；隔离 Windows 管理安全检查为 `1 + 32 + 3`。
 - 静态驱动矩阵新增的 stream context、文件 ID、paging compatibility、activation preflight、mapped-write status、package delta/snapshot 和 `FltObjectDereference` 门禁均为 PASS；映射写回动态证据、unsigned 驱动加载、正式签名/唯一 altitude 和完整服务写回动态证据仍明确为 BLOCKED。CI 没有安装或加载该 unsigned 驱动，也没有重启、注销或触碰生产环境。
+
+### 第四轮：激活初始化屏障（2026-09-12）
+
+本轮先提交设计 `docs/validation/FOURTH-ROUND-DESIGN-2026-09-12.md`（`c42ea18`），再实施协议和状态机。没有修改主任务保留的未跟踪激活屏障、第三轮记录和复审文档。
+
+- 协议由 v2 升为 v3：`BEGIN_INITIALIZE`、`COMMIT_INITIALIZE`、`ABORT_INITIALIZE` 三个固定 IOCTL；状态加入 `YCP_STATE_INITIALIZING` 和 expected/marked/failure/deadline 字段，`YCP_STATUS` 由 4264 变为 4288 字节。旧版本没有静默兼容路径。
+- 用户态 `SelfProtectionCoordinator.Activate` 现在要求 preflight，顺序固定为首次 preflight → Begin → 核验 `Initializing` 且能力为空 → 第二次 preflight → Commit → 核验 `Active` 后才发布能力和映射写回条件。第二次扫描失败、Begin/Commit 应答异常或超时都尝试 Abort；稳定 Active 不会被重复 Begin 替换。
+- `SelfProtectionFilePreflight` 以 `GetFileInformationByHandle` 的 `FileAttributes`、文件 ID、硬链接数为权威；路径属性只做一致性检查，并额外以真实句柄检查两个保护根的父目录。属性不一致、重解析、不可读、别名或父级异常都会阻止初始化。
+- 初始化态只冻结已确认双根及严格父级的命名空间变化；未知路径、普通非命名空间 I/O、section 同步以及 paging/cache 写入不转成全局拒绝。可信服务扫描的 stream 标记失败计入驱动失败计数，Commit 不能越过该计数。
+- 本地临时目录以 `mcs -sdk:4.5 -warnaserror` 编译 Core/App/Tests，C# 回归为 `73/73`；`python3 scripts/test-driver-control.py` 的原有控制/stream/pre-create/namespace 桩和新增初始化屏障桩均通过；`git diff --check` 通过。该结果不等于 WDK 编译或 Windows 动态证据。
+
+第四轮仍明确 BLOCKED：本机没有 Windows WDK/PowerShell，尚未获得本轮真实 Windows CI 运行；没有正式签名、唯一 altitude、安装/加载 unsigned 驱动、强制终止/挂起、已有句柄/映射/硬链接/重解析点动态阻断或重启后证据。没有生产驱动安装、加载、重启、注销、关机、账户/网络/Lenovo/SecureBoot/HVCI 变更。
