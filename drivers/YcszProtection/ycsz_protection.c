@@ -224,6 +224,16 @@ YcpPathHasBoundaryPrefix(
 }
 
 static BOOLEAN
+YcpPathIsStrictAncestor(
+    _In_ PUNICODE_STRING Path,
+    _In_ PUNICODE_STRING Root
+    )
+{
+    return Path != NULL && Root != NULL && Path->Length != 0 &&
+        Path->Length < Root->Length && YcpPathHasBoundaryPrefix(Path, Root);
+}
+
+static BOOLEAN
 YcpImageMatchesRoot(
     _In_ PUNICODE_STRING Root,
     _In_ PUNICODE_STRING Image
@@ -1056,6 +1066,22 @@ YcpShouldProtectFile(
           YcpPathHasBoundaryPrefix(&g_YcpState.ProtectedRoot, NormalizedName)) ||
          (g_YcpState.ProtectedDataRoot.Buffer != NULL &&
           YcpPathHasBoundaryPrefix(&g_YcpState.ProtectedDataRoot, NormalizedName)));
+    ExReleasePushLockShared(&g_YcpState.Lock);
+    KeLeaveCriticalRegion();
+    return protect;
+}
+
+BOOLEAN
+YcpShouldProtectAncestor(_In_ PUNICODE_STRING NormalizedName)
+{
+    BOOLEAN protect;
+    KeEnterCriticalRegion();
+    ExAcquirePushLockShared(&g_YcpState.Lock);
+    protect = g_YcpState.Active && !g_YcpState.Unloading &&
+        ((g_YcpState.ProtectedRoot.Buffer != NULL &&
+          YcpPathIsStrictAncestor(NormalizedName, &g_YcpState.ProtectedRoot)) ||
+         (g_YcpState.ProtectedDataRoot.Buffer != NULL &&
+          YcpPathIsStrictAncestor(NormalizedName, &g_YcpState.ProtectedDataRoot)));
     ExReleasePushLockShared(&g_YcpState.Lock);
     KeLeaveCriticalRegion();
     return protect;

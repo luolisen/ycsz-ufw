@@ -32,7 +32,7 @@ typedef struct { int MajorFunction,IrpFlags; struct { struct { int FileInformati
 typedef struct { IOPB *Iopb; } DATA;
 typedef DATA *PFLT_CALLBACK_DATA;
 typedef void *PCFLT_RELATED_OBJECTS;
-static int active=1, mutation, trusted, product, stream, resolved=1;
+static int active=1, mutation, trusted, product, stream, resolved=1, ancestor;
 static NAME name;
 static int YcpProtectionIsActive(void) { return active; }
 static int YcpCreateRequestsMutation(DATA *d) { (void)d; return mutation; }
@@ -41,6 +41,7 @@ static int YcpFileSystemControlRequestsMutation(DATA *d) { (void)d; return mutat
 static int YcpStreamIsProtected(void *o) { (void)o; return stream; }
 static int FltGetFileNameInformation(DATA *d,int flags,NAME **out) { (void)d;(void)flags;*out=resolved?&name:NULL; return resolved?0:-1; }
 static int FltParseFileNameInformation(NAME *n) { (void)n; return 0; }
+static int YcpShouldProtectAncestor(int *n) { (void)n; return ancestor; }
 static int YcpShouldProtectFile(int *n) { (void)n; return product; }
 static int YcpDestinationIsProtected(DATA *d,void *o,int *r) { (void)d;(void)o;*r=1;return 0; }
 static void FltReleaseFileNameInformation(NAME *n) { (void)n; }
@@ -65,6 +66,11 @@ int main(void) {
     assert(YcpPreOperationFile(&data,NULL,&completion)==FLT_PREOP_SUCCESS_NO_CALLBACK);
     active=0; op.MajorFunction=IRP_MJ_CREATE;
     assert(YcpPreOperationFile(&data,NULL,&completion)==FLT_PREOP_SUCCESS_NO_CALLBACK);
-    puts("PASS 7 pre-operation dispatch scenarios; allowed creates request post callbacks, denied creates do not, unrelated/paging I/O preserved");
+    active=1; ancestor=1; product=0; trusted=1; op.IrpFlags=0;
+    op.MajorFunction=IRP_MJ_SET_INFORMATION; op.Parameters.SetFileInformation.FileInformationClass=FileRenameInformation;
+    assert(YcpPreOperationFile(&data,NULL,&completion)==FLT_PREOP_COMPLETE);
+    op.MajorFunction=IRP_MJ_WRITE;
+    assert(YcpPreOperationFile(&data,NULL,&completion)==FLT_PREOP_SUCCESS_NO_CALLBACK);
+    puts("PASS 9 pre-operation dispatch scenarios; allowed creates request post callbacks, denied creates do not, unrelated/paging I/O preserved");
     return 0;
 }

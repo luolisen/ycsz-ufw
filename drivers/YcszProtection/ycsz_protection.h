@@ -41,3 +41,5 @@ YcpCompleteIrp(
 extern const FLT_REGISTRATION g_YcpFilterRegistration;
 
 NTSTATUS YcpFilterUnloadAuthorized(_In_ FLT_FILTER_UNLOAD_FLAGS Flags);
+
+BOOLEAN YcpShouldProtectAncestor(_In_ PUNICODE_STRING NormalizedName);

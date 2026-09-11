@@ -312,6 +312,7 @@ YcpPreOperationFile(
     BOOLEAN mutation = FALSE;
     BOOLEAN trustedWriter;
     BOOLEAN streamProtected;
+    BOOLEAN namespaceAncestor = FALSE;
     FLT_PREOP_CALLBACK_STATUS allowedStatus = FLT_PREOP_SUCCESS_NO_CALLBACK;
 
     if (CompletionContext != NULL) *CompletionContext = NULL;
@@ -363,6 +364,7 @@ YcpPreOperationFile(
         if (NT_SUCCESS(status)) {
             sourceResolved = TRUE;
             sourceProtected = sourceProtected || YcpShouldProtectFile(&nameInformation->Name);
+            namespaceAncestor = YcpIsNamespaceMutation(Data) && YcpShouldProtectAncestor(&nameInformation->Name);
         }
     }
 
@@ -378,6 +380,9 @@ YcpPreOperationFile(
         FltReleaseFileNameInformation(nameInformation);
     }
 
+    // Moving or redirecting a parent invalidates both protected root paths.
+    // This applies only to namespace mutations, never ordinary parent I/O.
+    if (namespaceAncestor) return YcpDenyMutation(Data);
     trustedWriter = YcpIsTrustedWriter(Data);
     if (trustedWriter && !YcpIsNamespaceMutation(Data)) return allowedStatus;
     // Never deny unrelated or unresolved filesystem operations globally.

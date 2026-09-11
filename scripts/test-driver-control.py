@@ -14,7 +14,7 @@ driver = repo / 'drivers/YcszProtection'
 source = (driver / 'ycsz_protection.c').read_text()
 filter_source = (driver / 'ycsz_minifilter.c').read_text()
 
-def extract(name):
+def extract(name, return_type="NTSTATUS"):
     marker = '\n' + name + '('
     start = source.index(marker) + 1
     opening = source.index('{', start)
@@ -34,7 +34,7 @@ def extract(name):
         while depth:
             depth += (source[end] == '{') - (source[end] == '}')
             end += 1
-    return 'static NTSTATUS\n' + source[start:end] + '\n'
+    return 'static '+return_type+'\n' + source[start:end] + '\n'
 
 def extract_filter_boolean(name, return_type="BOOLEAN"):
     marker = '\n' + name + '('
@@ -72,3 +72,10 @@ with tempfile.TemporaryDirectory(prefix='ycsz-control-test-') as tmp:
     subprocess.run(compiler + ['-std=c11', '-Wall', '-Wextra', '-Werror',
                               str(work / 'precreate_dispatch.c'), '-o', str(work / 'precreate-test')], check=True)
     subprocess.run([str(work / 'precreate-test')], check=True)
+
+    (work / 'namespace_extracted.inc').write_text(
+        extract('YcpPathHasBoundaryPrefix','BOOLEAN') + extract('YcpPathIsStrictAncestor','BOOLEAN'))
+    shutil.copy2(driver / 'tests/namespace_boundary.c', work)
+    subprocess.run(compiler + ['-std=c11', '-Wall', '-Wextra', '-Werror',
+                              str(work / 'namespace_boundary.c'), '-o', str(work / 'namespace-test')], check=True)
+    subprocess.run([str(work / 'namespace-test')], check=True)
