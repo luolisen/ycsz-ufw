@@ -131,3 +131,27 @@
 - 同一运行通过用户态 `64/64`、TLS `2/2`、合成网络 `9/9`、安装/移除输入 `20` 项、控制生命周期 `5` 组、WFP 事务回滚，以及隔离 Windows 管理安全集成 `1 + 32 + 3` 项检查。以上不等于驱动动态阻断已通过。
 
 仍然明确未完成：没有正式签名/唯一 altitude/CAT 信任包，没有安装或加载生产驱动，没有在隔离 Windows 上完成真实的已有句柄写入、映射写入、硬链接/重解析点、强制终止/挂起、控制句柄并发卸载和用户会话/PID 重启矩阵，也没有重启或生产机器证据。安装包校验和 Dynamic 工具已具备入口，但必须在可恢复签名靶场执行；普通更新流程在驱动仍加载时不能绕过可信服务和认证维护/卸载窗口直接替换受保护文件。
+
+### 第三轮续审：文件身份与完整升级回滚（2026-09-12）
+
+本轮先提交实施设计 `docs/validation/THIRD-ROUND-DESIGN-2026-09-12.md`（`f6dba9e`），随后在同一独占工作树实现。实现提交为 `9176651`，修正 WDK `FltGetFilterFromInstance` 调用约定的 `92bcd56`，以及补齐 Filter Manager filter rundown 引用释放和可移植资源测试的 `4f3d95f`。没有修改主任务保留的两个未跟踪审查文档。
+
+文件身份与别名边界：
+
+- 服务激活前新增只读 `SelfProtectionFilePreflight`，遍历安装根和 ProgramData 根，用 Windows 句柄读取卷序列号、文件 ID、硬链接计数和重解析属性；根不存在、身份不可读、重解析项、文件硬链接计数大于一或重复 `(VolumeSerial, FileIndex)` 都逐项报告并阻止发送激活请求。
+- minifilter 在成功 CREATE 后为确认属于产品命名空间的流建立 `FLT_STREAM_CONTEXT`，保存 `FileInternalInformation.IndexNumber`；已有句柄、重命名后的同一流和产品路径首次确认分别经过 context/名称判定。可信服务只允许普通内容更新；重命名/硬链接必须仍落在已确认产品命名空间内，重解析逃逸和未解析的产品源操作拒绝。
+- 未知路径、名称解析失败、普通重解析点、`IRP_MJ_ACQUIRE_FOR_SECTION_SYNCHRONIZATION` 和 paging/cache write 没有新增全局拒绝。映射写回只以 `MappingWritebackConditionMet` 记录激活前置条件，不声称可以阻断任意 Cache Manager 映射写回。
+- 修复了 `FltGetFilterFromInstance` 成功后的 `FltObjectDereference`；context 本体和已有 context 仍分别使用 `FltReleaseContext`。`scripts/test-driver-control.py` 的新增桩测试覆盖 filter 获取失败、context 分配失败、设置失败、已有 context 和成功路径，输出为资源引用平衡通过。
+
+升级与回滚边界：
+
+- `Install-Protection.ps1` 使用 `Get-WindowsDriver -Online` 的安装前后结构化快照，不解析本地化的 `pnputil` `Published Name` 文本；只接受已核验的 YCSZ Provider/Class/INF/CAT 包，删除集合只来自本次确认新增的 YCSZ 包。
+- 已有包在变更前必须导出并验证旧 INF/SYS/CAT；同时保存旧信任路径、旧 SID 属性和应用运行状态。`pnputil` 非零返回仍会重扫包清单，部分成功时按 delta 生成回滚计划；若重扫失败则保留状态/备份并报告人工恢复，不猜测副作用。
+- 任一加载、激活、卸载拒绝或恢复失败先经过应用/驱动 quiescent gate；不能停稳时不改信任、SID、服务注册或驱动包。回滚不完整时保留旧包备份目录，只有 Commit 后才清理。
+- `Test-ProtectionValidation.ps1` 的 46 项 Windows PowerShell 5.1 纯输入/故障注入检查覆盖修改前失败、安装失败（含部分发布）、加载失败、激活失败、卸载拒绝和恢复失败；本机及 Windows CI 的 C# Core/App/Tests 临时目录编译与测试为 `68/68`，TLS `2/2`，合成网络 `9/9`。
+
+### 第三轮 Windows CI 证据
+
+- 分支 `codex/luna-full-delivery-20260912`，最终实现提交 `4f3d95f`；[GitHub Actions 运行 34654419246](https://github.com/luolisen/ycsz-ufw/actions/runs/34654419246) 成功。
+- 同一运行通过 WDK Release x64 编译、stamped INF、`InfVerif`、用户态 `68/68`、TLS `2/2`、合成网络 `9/9`、Windows PowerShell 脚本解析、静态驱动门禁和 46 项安装回滚输入检查；隔离 Windows 管理安全检查为 `1 + 32 + 3`。
+- 静态驱动矩阵新增的 stream context、文件 ID、paging compatibility、activation preflight、mapped-write status、package delta/snapshot 和 `FltObjectDereference` 门禁均为 PASS；映射写回动态证据、unsigned 驱动加载、正式签名/唯一 altitude 和完整服务写回动态证据仍明确为 BLOCKED。CI 没有安装或加载该 unsigned 驱动，也没有重启、注销或触碰生产环境。
