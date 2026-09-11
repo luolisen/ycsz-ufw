@@ -21,7 +21,6 @@ AddService=%ServiceName%,0x00000002,ServiceInstall
 
 [DefaultUninstall.NT$ARCH$]
 LegacyUninstall=1
-DelFiles=DriverFiles.Uninstall
 
 [DefaultUninstall.NT$ARCH$.Services]
 DelService=%ServiceName%,0x00000200
@@ -30,9 +29,6 @@ DelService=%ServiceName%,0x00000200
 DefaultDestDir=13
 
 [DriverFiles]
-YcszProtection.sys
-
-[DriverFiles.Uninstall]
 YcszProtection.sys
 
 [SourceDisksFiles]
