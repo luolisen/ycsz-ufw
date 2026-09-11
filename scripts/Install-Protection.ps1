@@ -48,7 +48,7 @@ function ConvertTo-NtPath([string]$Path) {
     $drive = $full.Substring(0,2)
     $buffer = New-Object Text.StringBuilder 1024
     $length = [YcszProtectionNative]::QueryDosDevice($drive,$buffer,[uint32]$buffer.Capacity)
-    if ($length -eq 0) { throw "QueryDosDevice failed for $drive: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+    if ($length -eq 0) { throw "QueryDosDevice failed for ${drive}: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
     $device = $buffer.ToString()
     return $device + $full.Substring(2)
 }
