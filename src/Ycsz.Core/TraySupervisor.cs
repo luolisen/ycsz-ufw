@@ -53,6 +53,8 @@ namespace Ycsz {
         readonly IInteractiveSessionSource sessions;
         readonly ITrayRuntime runtime;
         readonly Action<string> logger;
+        readonly Action<ITrayProcess,int> registerProtection;
+        readonly Action<ITrayProcess,int> unregisterProtection;
         readonly TraySupervisorOptions options;
         readonly AutoResetEvent wake = new AutoResetEvent(false);
         Thread worker;
@@ -65,12 +67,14 @@ namespace Ycsz {
         bool stopping;
         bool disposed;
 
-        public TraySupervisor(IInteractiveSessionSource sessions, ITrayRuntime runtime, Action<string> logger, TraySupervisorOptions options = null) {
+        public TraySupervisor(IInteractiveSessionSource sessions, ITrayRuntime runtime, Action<string> logger, TraySupervisorOptions options = null, Action<ITrayProcess,int> registerProtection = null, Action<ITrayProcess,int> unregisterProtection = null) {
             if (sessions == null) throw new ArgumentNullException("sessions");
             if (runtime == null) throw new ArgumentNullException("runtime");
             this.sessions = sessions;
             this.runtime = runtime;
             this.logger = logger ?? delegate { };
+            this.registerProtection = registerProtection;
+            this.unregisterProtection = unregisterProtection;
             this.options = options ?? new TraySupervisorOptions();
             this.options.Validate();
         }
@@ -143,10 +147,13 @@ namespace Ycsz {
                 try { exited = existing.HasExited; }
                 catch (Exception e) { SafeDispose(existing); RegisterFailure(utcNow, "读取已有托盘状态失败：" + e.Message); return; }
                 if (!exited) {
-                    process = existing;
-                    healthySinceUtc = utcNow;
-                    nextAttemptUtc = DateTime.MaxValue;
-                    return;
+                    try {
+                        RegisterProtection(existing,active.Value);
+                        process = existing;
+                        healthySinceUtc = utcNow;
+                        nextAttemptUtc = DateTime.MaxValue;
+                        return;
+                    } catch (Exception e) { SafeDispose(existing); RegisterFailure(utcNow,"登记已有托盘失败："+e.Message); return; }
                 }
                 SafeDispose(existing);
             }
@@ -155,9 +162,12 @@ namespace Ycsz {
             try {
                 var started = runtime.Start(active.Value);
                 if (started == null) throw new InvalidOperationException("托盘启动器没有返回进程句柄");
-                process = started;
-                healthySinceUtc = utcNow;
-                nextAttemptUtc = DateTime.MaxValue;
+                try {
+                    RegisterProtection(started,active.Value);
+                    process = started;
+                    healthySinceUtc = utcNow;
+                    nextAttemptUtc = DateTime.MaxValue;
+                } catch { SafeDispose(started); throw; }
             } catch (Exception e) { RegisterFailure(utcNow, "启动托盘失败：" + e.Message); }
         }
 
@@ -179,7 +189,16 @@ namespace Ycsz {
             if (process == null) return;
             var old = process;
             process = null;
+            try { UnregisterProtection(old,sessionId); } catch (Exception e) { try { logger("注销托盘保护失败："+e.Message); } catch {} }
             SafeDispose(old);
+        }
+
+        void RegisterProtection(ITrayProcess value,int session) {
+            if (registerProtection != null) registerProtection(value,session);
+        }
+
+        void UnregisterProtection(ITrayProcess value,int session) {
+            if (unregisterProtection != null) unregisterProtection(value,session);
         }
 
         static void SafeDispose(ITrayProcess value) {

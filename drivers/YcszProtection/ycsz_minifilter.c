@@ -56,7 +56,8 @@ YcpIsProtectedSetInformationClass(
 static BOOLEAN
 YcpDestinationIsProtected(
     _In_ PFLT_CALLBACK_DATA Data,
-    _In_ PCFLT_RELATED_OBJECTS FltObjects
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
+    _Out_ PBOOLEAN Resolved
     )
 {
     FILE_INFORMATION_CLASS informationClass;
@@ -67,6 +68,8 @@ YcpDestinationIsProtected(
     PFLT_FILE_NAME_INFORMATION destination = NULL;
     NTSTATUS status;
     BOOLEAN protected = FALSE;
+
+    if (Resolved != NULL) *Resolved = FALSE;
 
     informationClass = Data->Iopb->Parameters.SetFileInformation.FileInformationClass;
     information = Data->Iopb->Parameters.SetFileInformation.InfoBuffer;
@@ -106,10 +109,47 @@ YcpDestinationIsProtected(
         &destination);
 
     if (NT_SUCCESS(status) && destination != NULL) {
+        if (Resolved != NULL) *Resolved = TRUE;
         protected = YcpShouldProtectFile(&destination->Name);
         FltReleaseFileNameInformation(destination);
     }
     return protected;
+}
+
+static BOOLEAN
+YcpAcquireRequestsMutation(
+    _In_ PFLT_CALLBACK_DATA Data
+    )
+{
+    ULONG protection;
+
+    if (Data == NULL || Data->Iopb == NULL) return FALSE;
+    if (Data->Iopb->MajorFunction == IRP_MJ_ACQUIRE_FOR_SECTION_SYNCHRONIZATION) {
+        protection = Data->Iopb->Parameters.AcquireForSectionSynchronization.PageProtection;
+        return (protection & (PAGE_READWRITE | PAGE_WRITECOPY |
+                              PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+    }
+#ifdef IRP_MJ_ACQUIRE_FOR_MOD_WRITE
+    if (Data->Iopb->MajorFunction == IRP_MJ_ACQUIRE_FOR_MOD_WRITE) return TRUE;
+#endif
+#ifdef IRP_MJ_ACQUIRE_FOR_CC_FLUSH
+    if (Data->Iopb->MajorFunction == IRP_MJ_ACQUIRE_FOR_CC_FLUSH) return TRUE;
+#endif
+    return FALSE;
+}
+
+static BOOLEAN
+YcpFileSystemControlRequestsMutation(
+    _In_ PFLT_CALLBACK_DATA Data
+    )
+{
+    ULONG code;
+
+    if (Data == NULL || Data->Iopb == NULL || Data->Iopb->MajorFunction != IRP_MJ_FILE_SYSTEM_CONTROL) {
+        return FALSE;
+    }
+    code = Data->Iopb->Parameters.FileSystemControl.Common.FsControlCode;
+    return code == FSCTL_SET_REPARSE_POINT || code == FSCTL_DELETE_REPARSE_POINT;
 }
 
 static FLT_PREOP_CALLBACK_STATUS
@@ -133,25 +173,15 @@ YcpPreOperationFile(
     NTSTATUS status;
     BOOLEAN sourceProtected = FALSE;
     BOOLEAN destinationProtected = FALSE;
+    BOOLEAN sourceResolved = FALSE;
+    BOOLEAN destinationResolved = TRUE;
     BOOLEAN mutation = FALSE;
+    BOOLEAN reparseMutation = FALSE;
 
     UNREFERENCED_PARAMETER(CompletionContext);
 
-    if (Data == NULL || Data->Iopb == NULL ||
-        Data->RequestorMode == KernelMode ||
-        !YcpProtectionIsActive()) {
+    if (Data == NULL || Data->Iopb == NULL || !YcpProtectionIsActive()) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
-    }
-
-    status = FltGetFileNameInformation(
-        Data,
-        FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_ALWAYS_ALLOW_CACHE_LOOKUP,
-        &nameInformation);
-    if (NT_SUCCESS(status) && nameInformation != NULL) {
-        status = FltParseFileNameInformation(nameInformation);
-        if (NT_SUCCESS(status)) {
-            sourceProtected = YcpShouldProtectFile(&nameInformation->Name);
-        }
     }
 
     switch (Data->Iopb->MajorFunction) {
@@ -166,22 +196,51 @@ YcpPreOperationFile(
     case IRP_MJ_SET_INFORMATION:
         if (YcpIsProtectedSetInformationClass(
                 Data->Iopb->Parameters.SetFileInformation.FileInformationClass)) {
-            destinationProtected = YcpDestinationIsProtected(Data, FltObjects);
-            mutation = sourceProtected || destinationProtected;
+            mutation = TRUE;
         }
         break;
 
-    default:
+    case IRP_MJ_FILE_SYSTEM_CONTROL:
+        mutation = YcpFileSystemControlRequestsMutation(Data);
+        reparseMutation = mutation;
         break;
+
+    default:
+        mutation = YcpAcquireRequestsMutation(Data);
+        break;
+    }
+    if (!mutation) return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    if (reparseMutation && !YcpIsTrustedWriter(Data)) return YcpDenyMutation(Data);
+
+    status = FltGetFileNameInformation(
+        Data,
+        FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_ALWAYS_ALLOW_CACHE_LOOKUP,
+        &nameInformation);
+    if (NT_SUCCESS(status) && nameInformation != NULL) {
+        status = FltParseFileNameInformation(nameInformation);
+        if (NT_SUCCESS(status)) {
+            sourceResolved = TRUE;
+            sourceProtected = YcpShouldProtectFile(&nameInformation->Name);
+        }
+    }
+
+    if (Data->Iopb->MajorFunction == IRP_MJ_SET_INFORMATION &&
+        (Data->Iopb->Parameters.SetFileInformation.FileInformationClass == FileRenameInformation ||
+         Data->Iopb->Parameters.SetFileInformation.FileInformationClass == FileRenameInformationEx ||
+         Data->Iopb->Parameters.SetFileInformation.FileInformationClass == FileLinkInformation ||
+         Data->Iopb->Parameters.SetFileInformation.FileInformationClass == FileLinkInformationEx)) {
+        destinationProtected = YcpDestinationIsProtected(Data, FltObjects, &destinationResolved);
     }
 
     if (nameInformation != NULL) {
         FltReleaseFileNameInformation(nameInformation);
     }
 
-    return (sourceProtected || destinationProtected) && mutation
-        ? YcpDenyMutation(Data)
-        : FLT_PREOP_SUCCESS_NO_CALLBACK;
+    if (YcpIsTrustedWriter(Data)) return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    if (!sourceResolved || !destinationResolved || sourceProtected || destinationProtected) {
+        return YcpDenyMutation(Data);
+    }
+    return FLT_PREOP_SUCCESS_NO_CALLBACK;
 }
 
 static NTSTATUS
@@ -196,6 +255,14 @@ static const FLT_OPERATION_REGISTRATION g_YcpFilterOperations[] = {
     { IRP_MJ_CREATE, 0, YcpPreOperationFile, NULL },
     { IRP_MJ_WRITE, 0, YcpPreOperationFile, NULL },
     { IRP_MJ_SET_INFORMATION, 0, YcpPreOperationFile, NULL },
+    { IRP_MJ_FILE_SYSTEM_CONTROL, 0, YcpPreOperationFile, NULL },
+    { IRP_MJ_ACQUIRE_FOR_SECTION_SYNCHRONIZATION, 0, YcpPreOperationFile, NULL },
+#ifdef IRP_MJ_ACQUIRE_FOR_MOD_WRITE
+    { IRP_MJ_ACQUIRE_FOR_MOD_WRITE, 0, YcpPreOperationFile, NULL },
+#endif
+#ifdef IRP_MJ_ACQUIRE_FOR_CC_FLUSH
+    { IRP_MJ_ACQUIRE_FOR_CC_FLUSH, 0, YcpPreOperationFile, NULL },
+#endif
     { IRP_MJ_OPERATION_END }
 };
 

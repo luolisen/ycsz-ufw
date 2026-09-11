@@ -31,6 +31,7 @@ namespace Ycsz {
                             try {
                                 request = Wire.Receive(pipe);
                                 if (request.Op == "status") reply = new Packet { Ok=true,Data=settings.Role,Status=handler(request).Status };
+                                else if (request.Op == "self-protection-status") reply = handler(request);
                                 else if (request.Op == "login") {
                                     if (!gate.Check(request.Password,settings.Password)) reply = new Packet { Error="密码错误或尝试过于频繁，请稍后重试" };
                                     else { if (sessions.Count > 64) sessions.Clear(); string token=Crypto.Token(); sessions[token]=DateTime.UtcNow.AddMinutes(15); reply=new Packet { Ok=true,Token=token,Data=settings.Role }; }

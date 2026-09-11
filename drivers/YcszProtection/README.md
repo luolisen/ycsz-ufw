@@ -46,3 +46,13 @@ INF 中的 minifilter altitude `385200.1234` 只是源码阶段占位值；提�
 这些变更只经过 macOS 上的 C# 编译/回归；SCM 停服和驱动行为均尚未通过 Windows 动态测试。
 
 便携控制生命周期检查：`python3 scripts/test-driver-control.py` 从真实 C 源码提取 CREATE/CLOSE 与卸载门禁函数进行桩测试。它验证顺序状态转换，不模拟内核线程、IRQL、I/O manager 或真实卸载；必须另外通过 WDK 和隔离 Windows 检查。
+
+## 第二轮协议与验收（2026-09-12）
+
+第二轮把共享协议升级为 v2：激活请求同时绑定安装根和 `TrustedDataRoot`，状态包含双根和核心/托盘身份，固定 x64 大小为 16/1088/3152/1104/40/32/4264。可信配置由安装器写入 `TrustedImagePath` 与 `TrustedDataRoot`；驱动拒绝旧版本、非精确长度和未配置的 ProgramData 根。
+
+服务通过固定设备路径登记真实用户 session 的托盘实例。驱动只接受已激活的核心服务调用，并重新查验托盘 PID、创建时间、token session、实际映像路径、实例摘要/nonce；保存 `PEPROCESS` 引用，旧进程退出或 session 切换后不能把保护转移给 PID 重用的进程。服务监督器在启动、采用、退出、切换和停机时登记/注销，登记失败不把托盘当作已保护实例继续运行。
+
+文件过滤覆盖双根的已有句柄写入、变更信息、可写 section/cache 映射和 reparse FSCTL。重解析点 FSCTL 对非可信写入者整体拒绝，以免仅凭未解析的目标缓冲区留下别名绕过；受保护变更必须来自已登记核心服务进程。普通 SYSTEM、管理员、用户进程和无法识别的内核请求没有通用豁免。维护租约只暂停进程句柄保护，文件过滤继续存在，准备卸载后才允许真正卸载。
+
+`scripts/Test-ProtectionDriver.ps1 -Mode Static` 在 CI 中检查上述源码、协议、ABI 和缺口；`-Mode Dynamic` 只接受带 `.ycsz-dynamic-fixture` 标记的隔离根、已激活的签名驱动和明确的临时环境。它对已有句柄、映射、硬链接、重解析点、根目录和控制句柄并发卸载输出 `PASS`/`FAIL`/`BLOCKED`，未能制造普通 SYSTEM token、真实 session 重启或正式签名/altitude 时必须输出 `BLOCKED`，不能扩大 unsigned CI 结论。

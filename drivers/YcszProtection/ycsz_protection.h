@@ -17,6 +17,11 @@ YcpShouldProtectFile(
     );
 
 BOOLEAN
+YcpIsTrustedWriter(
+    _In_ PFLT_CALLBACK_DATA Data
+    );
+
+BOOLEAN
 YcpProtectionIsActive(
     VOID
     );

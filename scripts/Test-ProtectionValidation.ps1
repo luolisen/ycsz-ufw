@@ -30,6 +30,9 @@ foreach ($field in @('OriginalFileName','ProviderName','ClassName')) {
     $bad.$field = 'OtherVendor'
     Must-Reject { Assert-ProtectionPackage 'oem12.inf' $bad }
 }
+$badCatalog = [pscustomobject]@{ OriginalFileName=$package.OriginalFileName; ProviderName=$package.ProviderName; ClassName=$package.ClassName; CatalogFile='Other.cat' }
+Must-Reject { Assert-ProtectionPackage 'oem12.inf' $badCatalog }
 Must-Reject { Assert-ProtectionPackage 'oem12.inf' $null }
 Must-Reject { Assert-ProtectionPackage 'oem12.inf' @($package,$package) }
+Must-Reject { Assert-ProtectionCatalogMembers (Join-Path $env:TEMP 'missing-ycsz-protection-package') }
 Write-Output "PASS $count pure protection install/remove input checks; no service, driver or system configuration changed."

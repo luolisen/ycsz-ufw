@@ -33,10 +33,11 @@
 C_ASSERT(sizeof(WCHAR) == 2);
 C_ASSERT(sizeof(YCP_CONTROL_HEADER) == 16);
 C_ASSERT(sizeof(YCP_PROCESS_IDENTITY) == 1088);
-C_ASSERT(sizeof(YCP_ACTIVATE_REQUEST) == 2128);
+C_ASSERT(sizeof(YCP_ACTIVATE_REQUEST) == 3152);
+C_ASSERT(sizeof(YCP_TRAY_REQUEST) == 1104);
 C_ASSERT(sizeof(YCP_MAINTENANCE_REQUEST) == 40);
 C_ASSERT(sizeof(YCP_UNLOAD_REQUEST) == 32);
-C_ASSERT(sizeof(YCP_STATUS) == 2152);
+C_ASSERT(sizeof(YCP_STATUS) == 4264);
 
 typedef struct _YCP_RUNTIME_STATE {
     EX_PUSH_LOCK Lock;
@@ -45,6 +46,9 @@ typedef struct _YCP_RUNTIME_STATE {
     LONGLONG TargetCreateTime100ns;
     UNICODE_STRING ImagePath;
     UNICODE_STRING ProtectedRoot;
+    UNICODE_STRING ProtectedDataRoot;
+    PEPROCESS TrayProcess;
+    YCP_PROCESS_IDENTITY TrayIdentity;
     UCHAR ImageSha256[32];
     UCHAR InstanceNonce[16];
     UCHAR LeaseId[16];
@@ -262,7 +266,54 @@ YcpTargetMatchesLocked(
         return FALSE;
     }
 
-    return PsGetProcessCreateTimeQuadPart(ProcessObject) == g_YcpState.TargetCreateTime100ns;
+    return PsGetProcessCreateTimeQuadPart(ProcessObject) == g_YcpState.TargetCreateTime100ns &&
+        PsGetProcessExitStatus(ProcessObject) == STATUS_PENDING;
+}
+
+static BOOLEAN
+YcpTrayTargetMatchesLocked(
+    _In_ PEPROCESS ProcessObject
+    )
+{
+    if (g_YcpState.TrayProcess == NULL || ProcessObject != g_YcpState.TrayProcess) {
+        return FALSE;
+    }
+
+    return (ULONG)(ULONG_PTR)PsGetProcessId(ProcessObject) == g_YcpState.TrayIdentity.ProcessId &&
+        PsGetProcessCreateTimeQuadPart(ProcessObject) == g_YcpState.TrayIdentity.CreateTime100ns &&
+        PsGetProcessExitStatus(ProcessObject) == STATUS_PENDING;
+}
+
+static BOOLEAN
+YcpIdentityEquals(
+    _In_ const YCP_PROCESS_IDENTITY *Left,
+    _In_ const YCP_PROCESS_IDENTITY *Right
+    )
+{
+    return Left != NULL && Right != NULL &&
+        RtlEqualMemory(Left, Right, sizeof(*Left));
+}
+
+static BOOLEAN
+YcpProcessSessionMatches(
+    _In_ PEPROCESS ProcessObject,
+    _In_ ULONG ExpectedSessionId
+    )
+{
+    PACCESS_TOKEN token;
+    PULONG sessionId = NULL;
+    BOOLEAN matches = FALSE;
+
+    token = PsReferencePrimaryToken(ProcessObject);
+    if (token != NULL) {
+        if (NT_SUCCESS(SeQueryInformationToken(token, TokenSessionId, (PVOID *)&sessionId)) &&
+            sessionId != NULL && *sessionId == ExpectedSessionId) {
+            matches = TRUE;
+        }
+        if (sessionId != NULL) ExFreePool(sessionId);
+        PsDereferencePrimaryToken(token);
+    }
+    return matches;
 }
 
 static BOOLEAN
@@ -278,6 +329,20 @@ YcpLeaseValidLocked(
 
     KeQuerySystemTime(&now);
     return now.QuadPart < g_YcpState.LeaseExpiresAt100ns;
+}
+
+static VOID
+YcpClearTrayLocked(
+    VOID
+    )
+{
+    PEPROCESS oldProcess = g_YcpState.TrayProcess;
+
+    g_YcpState.TrayProcess = NULL;
+    RtlZeroMemory(&g_YcpState.TrayIdentity, sizeof(g_YcpState.TrayIdentity));
+    if (oldProcess != NULL) {
+        ObDereferenceObject(oldProcess);
+    }
 }
 
 static VOID
@@ -299,6 +364,8 @@ YcpClearTargetLocked(
     RtlZeroMemory(g_YcpState.InstanceNonce, sizeof(g_YcpState.InstanceNonce));
     YcpFreeString(&g_YcpState.ImagePath);
     YcpFreeString(&g_YcpState.ProtectedRoot);
+    YcpFreeString(&g_YcpState.ProtectedDataRoot);
+    YcpClearTrayLocked();
 
     if (oldProcess != NULL) {
         ObDereferenceObject(oldProcess);
@@ -327,6 +394,12 @@ YcpCurrentStateLocked(
     if (g_YcpState.UnloadPrepared && YcpLeaseValidLocked()) {
         state |= YCP_STATE_UNLOAD_PREPARED;
     }
+    if (g_YcpState.TrayProcess != NULL) {
+        state |= YCP_STATE_TRAY_REGISTERED;
+    }
+    if (g_YcpState.ProtectedDataRoot.Buffer != NULL) {
+        state |= YCP_STATE_DATA_ROOT;
+    }
     if (!g_YcpState.ObRegistered || !g_YcpState.FilterStarted) {
         state |= YCP_STATE_ERROR;
     }
@@ -344,6 +417,7 @@ YcpBuildStatusLocked(
     Status->State = YcpCurrentStateLocked();
     Status->LastStatus = g_YcpState.LastStatus;
     Status->TargetPid = g_YcpState.TargetPid;
+    Status->TargetSessionId = 0;
     Status->TargetCreateTime100ns = g_YcpState.TargetCreateTime100ns;
     Status->MaintenanceExpiresAt100ns = g_YcpState.LeaseExpiresAt100ns;
     RtlCopyMemory(Status->LeaseId, g_YcpState.LeaseId, sizeof(Status->LeaseId));
@@ -355,6 +429,10 @@ YcpBuildStatusLocked(
     if (g_YcpState.ProtectedRoot.Buffer != NULL) {
         RtlCopyMemory(Status->ProtectedRoot, g_YcpState.ProtectedRoot.Buffer, g_YcpState.ProtectedRoot.Length);
     }
+    if (g_YcpState.ProtectedDataRoot.Buffer != NULL) {
+        RtlCopyMemory(Status->ProtectedDataRoot, g_YcpState.ProtectedDataRoot.Buffer, g_YcpState.ProtectedDataRoot.Length);
+    }
+    RtlCopyMemory(&Status->TrayIdentity, &g_YcpState.TrayIdentity, sizeof(Status->TrayIdentity));
 }
 
 static NTSTATUS
@@ -370,15 +448,60 @@ YcpValidateHeader(
     return STATUS_SUCCESS;
 }
 
-// Required provisioning contract for the future signed installer (not yet wired). These values
-// are never taken from an IOCTL and remain fixed for this driver lifetime.
+// Provisioning values are written by the signed installer and never taken from an IOCTL.
 static WCHAR g_YcpTrustedImageBuffer[YCP_MAX_PATH_CHARS];
 static UNICODE_STRING g_YcpTrustedImage;
+static WCHAR g_YcpTrustedDataRootBuffer[YCP_MAX_PATH_CHARS];
+static UNICODE_STRING g_YcpTrustedDataRoot;
 static const UCHAR g_YcpServiceSid[] = {
     0x01,0x06,0x00,0x00,0x00,0x00,0x00,0x05,0x50,0x00,0x00,0x00,
     0xca,0x29,0xbe,0x68,0x10,0x95,0x9d,0x61,0xa6,0x77,0xb3,0xba,
     0xf2,0x38,0x14,0xd7,0xfd,0xd7,0xa1,0x75
 };
+
+static NTSTATUS
+YcpReadTrustedPath(
+    _In_ HANDLE ParametersKey,
+    _In_ PUNICODE_STRING ValueName,
+    _Out_writes_bytes_(StorageBytes) PWCH Storage,
+    _In_ ULONG StorageBytes,
+    _Out_ PUNICODE_STRING Result
+    )
+{
+    PKEY_VALUE_PARTIAL_INFORMATION value;
+    ULONG length;
+    ULONG dataOffset = (ULONG)FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data);
+    ULONG returned = 0;
+    UNICODE_STRING devicePrefix = RTL_CONSTANT_STRING(L"\\Device\\");
+    NTSTATUS status;
+
+    if (Storage == NULL || Result == NULL || StorageBytes == 0 ||
+        (StorageBytes % sizeof(WCHAR)) != 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    length = dataOffset + StorageBytes;
+    value = (PKEY_VALUE_PARTIAL_INFORMATION)ExAllocatePool2(POOL_FLAG_PAGED, length, YCP_POOL_TAG);
+    if (value == NULL) return STATUS_INSUFFICIENT_RESOURCES;
+    status = ZwQueryValueKey(ParametersKey, ValueName, KeyValuePartialInformation, value, length, &returned);
+    if (NT_SUCCESS(status)) {
+        if (returned < dataOffset || value->Type != REG_SZ ||
+            value->DataLength < 2 * sizeof(WCHAR) || value->DataLength > StorageBytes ||
+            value->DataLength > returned - dataOffset ||
+            value->DataLength % sizeof(WCHAR) != 0) {
+            status = STATUS_INVALID_PARAMETER;
+        } else {
+            RtlZeroMemory(Storage, StorageBytes);
+            RtlCopyMemory(Storage, value->Data, value->DataLength);
+            status = YcpFixedString(Storage, (USHORT)(StorageBytes / sizeof(WCHAR)), Result);
+            if (NT_SUCCESS(status) && (Result->Length + sizeof(WCHAR) != value->DataLength ||
+                !RtlPrefixUnicodeString(&devicePrefix, Result, TRUE))) {
+                status = STATUS_INVALID_PARAMETER;
+            }
+        }
+    }
+    ExFreePoolWithTag(value, YCP_POOL_TAG);
+    return status;
+}
 
 static NTSTATUS
 YcpLoadTrustedImage(_In_ PUNICODE_STRING RegistryPath)
@@ -387,18 +510,10 @@ YcpLoadTrustedImage(_In_ PUNICODE_STRING RegistryPath)
     HANDLE parametersKey = NULL;
     OBJECT_ATTRIBUTES attributes;
     UNICODE_STRING parameters = RTL_CONSTANT_STRING(L"Parameters");
-    UNICODE_STRING valueName = RTL_CONSTANT_STRING(L"TrustedImagePath");
-    UNICODE_STRING devicePrefix = RTL_CONSTANT_STRING(L"\\Device\\");
-    PKEY_VALUE_PARTIAL_INFORMATION value;
-    ULONG length = FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data) + sizeof(g_YcpTrustedImageBuffer);
-    ULONG dataOffset = (ULONG)FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data);
-    ULONG returned = 0;
+    UNICODE_STRING imageName = RTL_CONSTANT_STRING(L"TrustedImagePath");
+    UNICODE_STRING dataRootName = RTL_CONSTANT_STRING(L"TrustedDataRoot");
     NTSTATUS status;
-    value = (PKEY_VALUE_PARTIAL_INFORMATION)ExAllocatePool2(
-        POOL_FLAG_PAGED,
-        length,
-        YCP_POOL_TAG);
-    if (value == NULL) return STATUS_INSUFFICIENT_RESOURCES;
+
     InitializeObjectAttributes(&attributes, RegistryPath, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
     status = ZwOpenKey(&serviceKey, KEY_READ, &attributes);
     if (NT_SUCCESS(status)) {
@@ -406,24 +521,23 @@ YcpLoadTrustedImage(_In_ PUNICODE_STRING RegistryPath)
         status = ZwOpenKey(&parametersKey, KEY_QUERY_VALUE, &attributes);
     }
     if (NT_SUCCESS(status)) {
-        status = ZwQueryValueKey(parametersKey, &valueName, KeyValuePartialInformation, value, length, &returned);
+        status = YcpReadTrustedPath(
+            parametersKey,
+            &imageName,
+            g_YcpTrustedImageBuffer,
+            sizeof(g_YcpTrustedImageBuffer),
+            &g_YcpTrustedImage);
     }
     if (NT_SUCCESS(status)) {
-        if (returned < dataOffset || value->Type != REG_SZ ||
-            value->DataLength < 2 * sizeof(WCHAR) || value->DataLength > sizeof(g_YcpTrustedImageBuffer) ||
-            value->DataLength > returned - dataOffset ||
-            value->DataLength % sizeof(WCHAR) != 0) {
-            status = STATUS_INVALID_PARAMETER;
-        } else {
-            RtlCopyMemory(g_YcpTrustedImageBuffer, value->Data, value->DataLength);
-            status = YcpFixedString(g_YcpTrustedImageBuffer, (USHORT)(value->DataLength / sizeof(WCHAR)), &g_YcpTrustedImage);
-            if (NT_SUCCESS(status) && (g_YcpTrustedImage.Length + sizeof(WCHAR) != value->DataLength ||
-                !RtlPrefixUnicodeString(&devicePrefix, &g_YcpTrustedImage, TRUE))) status = STATUS_INVALID_PARAMETER;
-        }
+        status = YcpReadTrustedPath(
+            parametersKey,
+            &dataRootName,
+            g_YcpTrustedDataRootBuffer,
+            sizeof(g_YcpTrustedDataRootBuffer),
+            &g_YcpTrustedDataRoot);
     }
     if (parametersKey != NULL) ZwClose(parametersKey);
     if (serviceKey != NULL) ZwClose(serviceKey);
-    ExFreePoolWithTag(value, YCP_POOL_TAG);
     return status;
 }
 
@@ -465,21 +579,25 @@ YcpValidateIdentity(
     _In_ PEPROCESS Caller,
     _In_ const YCP_PROCESS_IDENTITY *Identity,
     _In_ const WCHAR *ProtectedRoot,
+    _In_ const WCHAR *ProtectedDataRoot,
     _Out_ PUNICODE_STRING ImagePath,
-    _Out_ PUNICODE_STRING RootPath
+    _Out_ PUNICODE_STRING RootPath,
+    _Out_ PUNICODE_STRING DataRootPath
     )
 {
     NTSTATUS status;
     UNICODE_STRING requestedImage;
     UNICODE_STRING requestedRoot;
+    UNICODE_STRING requestedDataRoot;
     PUNICODE_STRING locatedImage = NULL;
 
     RtlZeroMemory(ImagePath, sizeof(*ImagePath));
     RtlZeroMemory(RootPath, sizeof(*RootPath));
+    RtlZeroMemory(DataRootPath, sizeof(*DataRootPath));
 
     if (Caller == NULL || Identity == NULL || !YcpHasServiceIdentity(Caller) ||
         Identity->ProcessId != (ULONG)(ULONG_PTR)PsGetProcessId(Caller) ||
-        Identity->Reserved != 0 ||
+        Identity->SessionId != 0 ||
         Identity->CreateTime100ns != PsGetProcessCreateTimeQuadPart(Caller) ||
         YcpIsZeroBytes(Identity->InstanceNonce, sizeof(Identity->InstanceNonce)) ||
         YcpIsZeroBytes(Identity->ImageSha256, sizeof(Identity->ImageSha256))) {
@@ -489,6 +607,13 @@ YcpValidateIdentity(
     status = YcpFixedString(Identity->ImagePath, YCP_MAX_PATH_CHARS, &requestedImage);
     if (!NT_SUCCESS(status)) {
         return status;
+    }
+    status = YcpFixedString(ProtectedDataRoot, YCP_MAX_PATH_CHARS, &requestedDataRoot);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    if (!RtlEqualUnicodeString(&requestedDataRoot, &g_YcpTrustedDataRoot, TRUE)) {
+        return STATUS_ACCESS_DENIED;
     }
     status = YcpFixedString(ProtectedRoot, YCP_MAX_PATH_CHARS, &requestedRoot);
     if (!NT_SUCCESS(status)) {
@@ -510,14 +635,63 @@ YcpValidateIdentity(
     if (NT_SUCCESS(status)) {
         status = YcpCopyString(&requestedRoot, RootPath);
     }
+    if (NT_SUCCESS(status)) {
+        status = YcpCopyString(&requestedDataRoot, DataRootPath);
+    }
     if (locatedImage != NULL) {
         ExFreePool(locatedImage);
     }
     if (!NT_SUCCESS(status)) {
         YcpFreeString(ImagePath);
         YcpFreeString(RootPath);
+        YcpFreeString(DataRootPath);
     }
     return status;
+}
+
+static NTSTATUS
+YcpValidateTrayIdentity(
+    _In_ const YCP_PROCESS_IDENTITY *Identity,
+    _Out_ PEPROCESS *TrayProcess
+    )
+{
+    PEPROCESS process = NULL;
+    PUNICODE_STRING locatedImage = NULL;
+    UNICODE_STRING requestedImage;
+    NTSTATUS status;
+
+    if (TrayProcess == NULL || Identity == NULL || Identity->ProcessId == 0 ||
+        Identity->SessionId == 0 || Identity->CreateTime100ns <= 0 ||
+        YcpIsZeroBytes(Identity->InstanceNonce, sizeof(Identity->InstanceNonce)) ||
+        YcpIsZeroBytes(Identity->ImageSha256, sizeof(Identity->ImageSha256))) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    status = YcpFixedString(Identity->ImagePath, YCP_MAX_PATH_CHARS, &requestedImage);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    status = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)Identity->ProcessId, &process);
+    if (!NT_SUCCESS(status) || process == NULL) {
+        return STATUS_NOT_FOUND;
+    }
+    if (PsGetProcessCreateTimeQuadPart(process) != Identity->CreateTime100ns ||
+        PsGetProcessExitStatus(process) != STATUS_PENDING ||
+        !YcpProcessSessionMatches(process, Identity->SessionId) ||
+        !NT_SUCCESS(SeLocateProcessImageName(process, &locatedImage)) ||
+        locatedImage == NULL) {
+        if (locatedImage != NULL) ExFreePool(locatedImage);
+        ObDereferenceObject(process);
+        return STATUS_ACCESS_DENIED;
+    }
+    if (!RtlEqualUnicodeString(&requestedImage, locatedImage, TRUE) ||
+        !RtlEqualUnicodeString(&g_YcpTrustedImage, locatedImage, TRUE)) {
+        if (locatedImage != NULL) ExFreePool(locatedImage);
+        ObDereferenceObject(process);
+        return STATUS_ACCESS_DENIED;
+    }
+    if (locatedImage != NULL) ExFreePool(locatedImage);
+    *TrayProcess = process;
+    return STATUS_SUCCESS;
 }
 
 static NTSTATUS
@@ -529,6 +703,7 @@ YcpActivate(
     NTSTATUS status;
     UNICODE_STRING imagePath;
     UNICODE_STRING rootPath;
+    UNICODE_STRING dataRootPath;
 
     status = YcpValidateHeader(&Request->Header, sizeof(*Request));
     if (!NT_SUCCESS(status)) {
@@ -539,8 +714,10 @@ YcpActivate(
         Caller,
         &Request->Identity,
         Request->ProtectedRoot,
+        Request->ProtectedDataRoot,
         &imagePath,
-        &rootPath);
+        &rootPath,
+        &dataRootPath);
     if (!NT_SUCCESS(status)) {
         return status;
     }
@@ -553,6 +730,7 @@ YcpActivate(
     KeLeaveCriticalRegion();
         YcpFreeString(&imagePath);
         YcpFreeString(&rootPath);
+        YcpFreeString(&dataRootPath);
         return STATUS_DEVICE_BUSY;
     }
 
@@ -566,6 +744,7 @@ YcpActivate(
     g_YcpState.TargetCreateTime100ns = Request->Identity.CreateTime100ns;
     g_YcpState.ImagePath = imagePath;
     g_YcpState.ProtectedRoot = rootPath;
+    g_YcpState.ProtectedDataRoot = dataRootPath;
     RtlCopyMemory(g_YcpState.ImageSha256, Request->Identity.ImageSha256, sizeof(g_YcpState.ImageSha256));
     RtlCopyMemory(g_YcpState.InstanceNonce, Request->Identity.InstanceNonce, sizeof(g_YcpState.InstanceNonce));
     g_YcpState.LeaseExpiresAt100ns = 0;
@@ -586,6 +765,92 @@ YcpValidateCallerLocked(
     )
 {
     return !g_YcpState.Unloading && YcpTargetMatchesLocked(Caller) ? STATUS_SUCCESS : STATUS_ACCESS_DENIED;
+}
+
+static NTSTATUS
+YcpRegisterTray(
+    _In_ PEPROCESS Caller,
+    _In_ const YCP_TRAY_REQUEST *Request
+    )
+{
+    NTSTATUS status;
+    PEPROCESS trayProcess = NULL;
+
+    status = YcpValidateHeader(&Request->Header, sizeof(*Request));
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    status = YcpValidateTrayIdentity(&Request->Identity, &trayProcess);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    KeEnterCriticalRegion();
+    ExAcquirePushLockExclusive(&g_YcpState.Lock);
+    status = YcpValidateCallerLocked(Caller);
+    if (NT_SUCCESS(status) && !g_YcpState.Active) {
+        status = STATUS_DEVICE_NOT_READY;
+    }
+    if (NT_SUCCESS(status) && YcpLeaseValidLocked()) {
+        status = STATUS_DEVICE_BUSY;
+    }
+    if (NT_SUCCESS(status) && trayProcess == g_YcpState.TargetProcess) {
+        status = STATUS_INVALID_PARAMETER;
+    }
+    if (NT_SUCCESS(status) && g_YcpState.TrayProcess != NULL) {
+        if (YcpIdentityEquals(&g_YcpState.TrayIdentity, &Request->Identity)) {
+            // Repeated registration of the same live identity is idempotent.
+            ObDereferenceObject(trayProcess);
+            trayProcess = NULL;
+        } else if (PsGetProcessExitStatus(g_YcpState.TrayProcess) == STATUS_PENDING) {
+            status = STATUS_DEVICE_BUSY;
+        } else {
+            YcpClearTrayLocked();
+        }
+    }
+    if (NT_SUCCESS(status) && trayProcess != NULL) {
+        g_YcpState.TrayProcess = trayProcess;
+        RtlCopyMemory(&g_YcpState.TrayIdentity, &Request->Identity, sizeof(g_YcpState.TrayIdentity));
+        trayProcess = NULL;
+    }
+    if (NT_SUCCESS(status)) {
+        g_YcpState.LastRequestId = Request->Header.RequestId;
+        g_YcpState.LastStatus = STATUS_SUCCESS;
+    }
+    ExReleasePushLockExclusive(&g_YcpState.Lock);
+    KeLeaveCriticalRegion();
+    if (trayProcess != NULL) ObDereferenceObject(trayProcess);
+    return status;
+}
+
+static NTSTATUS
+YcpUnregisterTray(
+    _In_ PEPROCESS Caller,
+    _In_ const YCP_TRAY_REQUEST *Request
+    )
+{
+    NTSTATUS status;
+
+    status = YcpValidateHeader(&Request->Header, sizeof(*Request));
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    KeEnterCriticalRegion();
+    ExAcquirePushLockExclusive(&g_YcpState.Lock);
+    status = YcpValidateCallerLocked(Caller);
+    if (NT_SUCCESS(status) && g_YcpState.TrayProcess != NULL &&
+        !YcpIdentityEquals(&g_YcpState.TrayIdentity, &Request->Identity)) {
+        status = STATUS_ACCESS_DENIED;
+    }
+    if (NT_SUCCESS(status)) {
+        YcpClearTrayLocked();
+        g_YcpState.LastRequestId = Request->Header.RequestId;
+        g_YcpState.LastStatus = STATUS_SUCCESS;
+    }
+    ExReleasePushLockExclusive(&g_YcpState.Lock);
+    KeLeaveCriticalRegion();
+    return status;
 }
 
 static NTSTATUS
@@ -740,7 +1005,7 @@ YcpProtectionIsActive(
 
     KeEnterCriticalRegion();
     ExAcquirePushLockShared(&g_YcpState.Lock);
-    active = g_YcpState.Active && !YcpLeaseValidLocked();
+    active = g_YcpState.Active && !g_YcpState.Unloading;
     ExReleasePushLockShared(&g_YcpState.Lock);
     KeLeaveCriticalRegion();
     return active;
@@ -770,7 +1035,8 @@ YcpShouldProtectProcess(
 
     KeEnterCriticalRegion();
     ExAcquirePushLockShared(&g_YcpState.Lock);
-    protect = g_YcpState.Active && !YcpLeaseValidLocked() && YcpTargetMatchesLocked(ProcessObject);
+    protect = g_YcpState.Active && !YcpLeaseValidLocked() &&
+        (YcpTargetMatchesLocked(ProcessObject) || YcpTrayTargetMatchesLocked(ProcessObject));
     ExReleasePushLockShared(&g_YcpState.Lock);
     KeLeaveCriticalRegion();
     return protect;
@@ -785,12 +1051,33 @@ YcpShouldProtectFile(
 
     KeEnterCriticalRegion();
     ExAcquirePushLockShared(&g_YcpState.Lock);
-    protect = g_YcpState.Active && !YcpLeaseValidLocked() &&
-        g_YcpState.ProtectedRoot.Buffer != NULL &&
-        YcpPathHasBoundaryPrefix(&g_YcpState.ProtectedRoot, NormalizedName);
+    protect = g_YcpState.Active && !g_YcpState.Unloading &&
+        ((g_YcpState.ProtectedRoot.Buffer != NULL &&
+          YcpPathHasBoundaryPrefix(&g_YcpState.ProtectedRoot, NormalizedName)) ||
+         (g_YcpState.ProtectedDataRoot.Buffer != NULL &&
+          YcpPathHasBoundaryPrefix(&g_YcpState.ProtectedDataRoot, NormalizedName)));
     ExReleasePushLockShared(&g_YcpState.Lock);
     KeLeaveCriticalRegion();
     return protect;
+}
+
+BOOLEAN
+YcpIsTrustedWriter(
+    _In_ PFLT_CALLBACK_DATA Data
+    )
+{
+    PEPROCESS process;
+    BOOLEAN allowed = FALSE;
+
+    if (Data == NULL) return FALSE;
+    process = FltGetRequestorProcess(Data);
+    if (process == NULL) return FALSE;
+    KeEnterCriticalRegion();
+    ExAcquirePushLockShared(&g_YcpState.Lock);
+    allowed = g_YcpState.Active && !g_YcpState.Unloading && YcpTargetMatchesLocked(process);
+    ExReleasePushLockShared(&g_YcpState.Lock);
+    KeLeaveCriticalRegion();
+    return allowed;
 }
 
 static NTSTATUS
@@ -869,15 +1156,31 @@ YcpDeviceControl(
 
     switch (stack->Parameters.DeviceIoControl.IoControlCode) {
     case IOCTL_YCP_ACTIVATE:
-        if (inputLength < sizeof(YCP_ACTIVATE_REQUEST)) {
+        if (inputLength != sizeof(YCP_ACTIVATE_REQUEST)) {
             status = STATUS_BUFFER_TOO_SMALL;
         } else {
             status = YcpActivate(caller, (const YCP_ACTIVATE_REQUEST *)buffer);
         }
         break;
 
+    case IOCTL_YCP_REGISTER_TRAY:
+        if (inputLength != sizeof(YCP_TRAY_REQUEST)) {
+            status = STATUS_BUFFER_TOO_SMALL;
+        } else {
+            status = YcpRegisterTray(caller, (const YCP_TRAY_REQUEST *)buffer);
+        }
+        break;
+
+    case IOCTL_YCP_UNREGISTER_TRAY:
+        if (inputLength != sizeof(YCP_TRAY_REQUEST)) {
+            status = STATUS_BUFFER_TOO_SMALL;
+        } else {
+            status = YcpUnregisterTray(caller, (const YCP_TRAY_REQUEST *)buffer);
+        }
+        break;
+
     case IOCTL_YCP_ENTER_MAINTENANCE:
-        if (inputLength < sizeof(YCP_MAINTENANCE_REQUEST)) {
+        if (inputLength != sizeof(YCP_MAINTENANCE_REQUEST)) {
             status = STATUS_BUFFER_TOO_SMALL;
         } else {
             status = YcpEnterMaintenance(caller, (const YCP_MAINTENANCE_REQUEST *)buffer);
@@ -885,7 +1188,7 @@ YcpDeviceControl(
         break;
 
     case IOCTL_YCP_EXIT_MAINTENANCE:
-        if (inputLength < sizeof(YCP_MAINTENANCE_REQUEST)) {
+        if (inputLength != sizeof(YCP_MAINTENANCE_REQUEST)) {
             status = STATUS_BUFFER_TOO_SMALL;
         } else {
             status = YcpExitMaintenance(caller, (const YCP_MAINTENANCE_REQUEST *)buffer);
@@ -893,7 +1196,7 @@ YcpDeviceControl(
         break;
 
     case IOCTL_YCP_PREPARE_UNLOAD:
-        if (inputLength < sizeof(YCP_UNLOAD_REQUEST)) {
+        if (inputLength != sizeof(YCP_UNLOAD_REQUEST)) {
             status = STATUS_BUFFER_TOO_SMALL;
         } else {
             status = YcpPrepareUnload(caller, (const YCP_UNLOAD_REQUEST *)buffer);
@@ -901,7 +1204,7 @@ YcpDeviceControl(
         break;
 
     case IOCTL_YCP_QUERY_STATUS:
-        if (outputLength < sizeof(YCP_STATUS)) {
+        if (inputLength != 0 || outputLength != sizeof(YCP_STATUS)) {
             status = STATUS_BUFFER_TOO_SMALL;
         } else {
             status = YcpQueryStatus(caller, (YCP_STATUS *)buffer);

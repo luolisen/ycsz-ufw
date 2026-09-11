@@ -39,8 +39,9 @@ if ($Mode -eq 'Static') {
         foreach ($name in @('ycsz_protection.c','ycsz_minifilter.c','ycsz_protection.h','ycsz_protection_protocol.h','YcszProtection.vcxproj','YcszProtection.inf')) {
             if (!(Test-Path (Join-Path $driver $name))) { throw "Missing driver source: $name" }
         }
+        if (!(Test-Path (Join-Path $repo 'scripts\Test-ProtectionDriver.ps1'))) { throw 'Dynamic driver validation tool missing' }
         $source=(Get-Content (Join-Path $driver 'ycsz_protection.c') -Raw) + (Get-Content (Join-Path $driver 'ycsz_minifilter.c') -Raw)
-        foreach ($needle in @('OB_OPERATION_HANDLE_CREATE','OB_OPERATION_HANDLE_DUPLICATE','PROCESS_TERMINATE','IRP_MJ_WRITE','FileDispositionInformation','FileRenameInformation')) {
+        foreach ($needle in @('OB_OPERATION_HANDLE_CREATE','OB_OPERATION_HANDLE_DUPLICATE','PROCESS_TERMINATE','IRP_MJ_WRITE','FileDispositionInformation','FileRenameInformation','IOCTL_YCP_REGISTER_TRAY','YcpIsTrustedWriter','IRP_MJ_ACQUIRE_FOR_SECTION_SYNCHRONIZATION','FSCTL_SET_REPARSE_POINT','ProtectedDataRoot','TrustedDataRoot')) {
             if ($source -notmatch [regex]::Escape($needle)) { throw "Driver source gate missing: $needle" }
         }
         if ($source -match 'Ioctl.*PID|arbitrary.*PID') { throw 'Driver source appears to expose an arbitrary PID control path' }
@@ -49,7 +50,7 @@ if ($Mode -eq 'Static') {
         if ($source -notmatch 'OpenFileObjects == 0' -or $source -notmatch 'FsContext = &g_YcpState') { throw 'Control file references do not gate optional unload' }
         if ($source -match 'DriverUnload\s*=') { throw 'Unload must be managed by Filter Manager' }
         $protocol=Get-Content (Join-Path $driver 'ycsz_protection_protocol.h') -Raw
-        if ($protocol -notmatch 'YCP_MAX_LEASE_SECONDS\s+900') { throw 'Maintenance lease bound missing' }
+        if ($protocol -notmatch 'YCP_PROTOCOL_VERSION\s+2u' -or $protocol -notmatch 'YCP_MAX_LEASE_SECONDS\s+900') { throw 'Protection protocol v2 or maintenance lease bound missing' }
         if ($protocol -notmatch 'IOCTL_YCP_PREPARE_UNLOAD') { throw 'Authenticated unload protocol missing' }
         $installer=Get-Content (Join-Path $repo 'installer\Ycsz.nsi') -Raw
         if ($installer -match 'YcszProtection') { throw 'Unverified driver must not be in the default installer' }
@@ -58,17 +59,18 @@ if ($Mode -eq 'Static') {
         $program=Get-Content (Join-Path $repo 'src\Ycsz.App\Program.cs') -Raw
         $transport=Get-Content (Join-Path $repo 'src\Ycsz.Core\SelfProtectionDeviceTransport.cs') -Raw
         $driver=Get-Content (Join-Path $repo 'drivers\YcszProtection\ycsz_protection.c') -Raw
-        if ($program -notmatch 'new WindowsSelfProtectionTransport') { throw 'Service does not use the fixed device transport' }
+        if ($program -notmatch 'new WindowsSelfProtectionTransport\(Store\.Root\)') { throw 'Service does not bind the fixed ProgramData root to the device transport' }
         if ($program -notmatch 'self-protection-enter' -or $program -notmatch 'self-protection-exit') { throw 'Authenticated maintenance IPC operations missing' }
         if ($program -notmatch 'self-protection-prepare-unload' -or $program -notmatch 'PrepareUnload') { throw 'Authenticated unload preparation path missing' }
-        if ($transport -notmatch 'QueryDosDevice' -or $driver -notmatch 'SeLocateProcessImageName') { throw 'Fixed image identity path conversion/contract missing' }
+        if ($transport -notmatch 'QueryDosDevice' -or $transport -notmatch 'StateDataRoot' -or $transport -notmatch 'RegisterTray' -or $driver -notmatch 'SeLocateProcessImageName') { throw 'Fixed image identity, dual-root or tray contract missing' }
+        if ($program -notmatch '--protection-status' -or $program -notmatch 'RegisterTray') { throw 'Actual activation or tray registration path missing' }
         if ($transport -match 'ServiceStop') { throw 'Transport must not report unimplemented kernel ServiceStop capability' }
         if ($program -notmatch 'CanStop=!protectedService' -or $program -notmatch 'self-protection-stop' -or $program -match 'SetServiceStatus') { throw 'Fixed SCM controls/authenticated internal stop contract missing' }
     }
     Check 'Protection install and removal gates' {
         $install=Get-Content (Join-Path $repo 'scripts\Install-Protection.ps1') -Raw
         $remove=Get-Content (Join-Path $repo 'scripts\Remove-Protection.ps1') -Raw
-        foreach ($needle in @('TrustedImagePath','sidtype','QueryDosDevice','Get-AuthenticodeSignature','pnputil')) {
+        foreach ($needle in @('TrustedImagePath','TrustedDataRoot','sidtype','QueryDosDevice','Get-AuthenticodeSignature','Assert-ProtectionCatalogMembers','signtool','--protection-status','pnputil','oldDataRoot')) {
             if ($install -notmatch [regex]::Escape($needle)) { throw "Protection installer gate missing: $needle" }
         }
         foreach ($needle in @('PREPARE_UNLOAD','fltmc.exe','unload YcszProtection','No service was deleted')) {
@@ -78,7 +80,7 @@ if ($Mode -eq 'Static') {
         $packages=Get-Content (Join-Path $repo 'packages.config') -Raw
         if ($props -notmatch '10\.0\.28000\.2526' -or $packages -notmatch 'Microsoft\.Windows\.WDK\.x64') { throw 'Pinned WDK NuGet inputs missing' }
         $workflow=Get-Content (Join-Path $repo '.github\workflows\windows-build.yml') -Raw
-        if ($workflow -notmatch 'windows-2025-vs2026' -or $workflow -notmatch 'InfVerif') { throw 'Windows driver CI gates missing' }
+        if ($workflow -notmatch 'windows-2025-vs2026' -or $workflow -notmatch 'InfVerif' -or $workflow -notmatch 'Test-ProtectionDriver') { throw 'Windows driver CI gates missing' }
     }
 } else {
     # Read-only installed checks. Never alter network, proxy, service or WFP state.
@@ -89,6 +91,14 @@ if ($Mode -eq 'Static') {
     Check 'Configuration uses protected binary' { $b=[IO.File]::ReadAllBytes("$env:ProgramData\YcszFirewall\settings.bin"); if ($b.Length -lt 32 -or $b[0] -eq 123) { throw 'Configuration missing or appears plaintext' } }
     Check 'Executable PE signature' { $b=[IO.File]::ReadAllBytes("$InstallDir\Ycsz.exe"); if ($b[0] -ne 77 -or $b[1] -ne 90) { throw 'Not a PE image' } }
     Check 'SCM failure recovery configured' { $r=Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Services\YcszFirewall; if (!$r.FailureActions) { throw 'Missing failure actions' } }
+    Check 'Protection activation when installed' {
+        $driver=Get-Service YcszProtection -ErrorAction SilentlyContinue
+        if ($driver) {
+            if ($driver.Status -ne 'Running') { throw 'YcszProtection is registered but not Running' }
+            $probe=Start-Process (Join-Path $InstallDir 'Ycsz.exe') -ArgumentList @('--protection-status') -Wait -PassThru -WindowStyle Hidden
+            if ($probe.ExitCode -ne 0) { throw 'YcszProtection is Running but v2 activation was not confirmed' }
+        }
+    }
 }
 $results | Format-Table -AutoSize
 $results | Where-Object Result -eq 'FAIL' | ForEach-Object {

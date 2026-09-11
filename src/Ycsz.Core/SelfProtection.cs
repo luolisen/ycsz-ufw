@@ -5,9 +5,9 @@ using System.Security.Cryptography;
 
 namespace Ycsz {
     public static class SelfProtectionProtocol {
-        public const int Version=1;
+        public const int Version=2;
         public const string DevicePath=@"\\.\YcszProtection";
-        public const string ControlPipeName="YcszFirewall.SelfProtection.v1";
+        public const string ControlPipeName="YcszFirewall.SelfProtection.v2";
     }
 
     [Flags]
@@ -31,13 +31,16 @@ namespace Ycsz {
         Activate,
         EnterMaintenance,
         ExitMaintenance,
-        PrepareUnload
+        PrepareUnload,
+        RegisterTray,
+        UnregisterTray
     }
 
     public sealed class ProtectionIdentity {
         public const string ExpectedServiceName = "YcszFirewall";
         public string ServiceName;
         public int ProcessId;
+        public int SessionId;
         public long StartTimeUtcFileTime;
         public string ImagePath;
         public string ImageSha256;
@@ -49,12 +52,23 @@ namespace Ycsz {
             using(var process=Process.GetCurrentProcess()) {
                 string actual=Path.GetFullPath(process.MainModule.FileName);
                 if(!String.Equals(actual,expected,StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("服务进程路径与固定安装路径不一致");
-                return new ProtectionIdentity { ServiceName=ExpectedServiceName,ProcessId=process.Id,StartTimeUtcFileTime=process.StartTime.ToUniversalTime().ToFileTimeUtc(),ImagePath=actual,ImageSha256=HashFile(actual),InstanceNonce=Guid.NewGuid().ToString("N") };
+                return new ProtectionIdentity { ServiceName=ExpectedServiceName,ProcessId=process.Id,SessionId=process.SessionId,StartTimeUtcFileTime=process.StartTime.ToUniversalTime().ToFileTimeUtc(),ImagePath=actual,ImageSha256=HashFile(actual),InstanceNonce=Guid.NewGuid().ToString("N") };
+            }
+        }
+
+        public static ProtectionIdentity CaptureProcess(int processId,string expectedImagePath,int expectedSessionId) {
+            if (processId<=0 || expectedSessionId<=0 || String.IsNullOrWhiteSpace(expectedImagePath)) throw new ArgumentException("tray identity");
+            string expected=Path.GetFullPath(expectedImagePath);
+            using(var process=Process.GetProcessById(processId)) {
+                if(process.HasExited || process.SessionId!=expectedSessionId) throw new InvalidOperationException("托盘进程会话已变化");
+                string actual=Path.GetFullPath(process.MainModule.FileName);
+                if(!String.Equals(actual,expected,StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("托盘进程路径与固定安装路径不一致");
+                return new ProtectionIdentity { ServiceName=ExpectedServiceName,ProcessId=process.Id,SessionId=process.SessionId,StartTimeUtcFileTime=process.StartTime.ToUniversalTime().ToFileTimeUtc(),ImagePath=actual,ImageSha256=HashFile(actual),InstanceNonce=Guid.NewGuid().ToString("N") };
             }
         }
 
         public void Validate() {
-            if(ServiceName!=ExpectedServiceName || ProcessId<=0 || StartTimeUtcFileTime<=0) throw new InvalidDataException("自保护进程身份无效");
+            if(ServiceName!=ExpectedServiceName || ProcessId<=0 || SessionId<0 || StartTimeUtcFileTime<=0) throw new InvalidDataException("自保护进程身份无效");
             if(String.IsNullOrWhiteSpace(ImagePath) || !Path.IsPathRooted(ImagePath) || !String.Equals(Path.GetFileName(ImagePath),"Ycsz.exe",StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("自保护映像路径无效");
             if(!IsSha256(ImageSha256) || String.IsNullOrWhiteSpace(InstanceNonce) || InstanceNonce.Length!=32 || !IsHex(InstanceNonce)) throw new InvalidDataException("自保护映像身份摘要无效");
         }
@@ -72,6 +86,8 @@ namespace Ycsz {
         public string RequestId;
         public SelfProtectionOperation Operation;
         public ProtectionIdentity Identity;
+        public ProtectionIdentity TrayIdentity;
+        public string ProtectedDataRoot;
         public string MaintenanceLeaseId;
         public long MaintenanceExpiresUtcFileTime;
 
@@ -80,8 +96,13 @@ namespace Ycsz {
             Guid ignored; if(!Guid.TryParseExact(RequestId,"N",out ignored)) throw new InvalidDataException("自保护请求 ID 无效");
             if(Identity==null) throw new InvalidDataException("缺少自保护进程身份");
             Identity.Validate();
-            if(Operation!=SelfProtectionOperation.Activate && Operation!=SelfProtectionOperation.EnterMaintenance && Operation!=SelfProtectionOperation.ExitMaintenance && Operation!=SelfProtectionOperation.PrepareUnload) throw new InvalidDataException("自保护操作无效");
-            if(Operation==SelfProtectionOperation.Activate) { if(MaintenanceLeaseId!=null || MaintenanceExpiresUtcFileTime!=0) throw new InvalidDataException("激活请求不得携带维护租约"); return; }
+            if(Operation!=SelfProtectionOperation.Activate && Operation!=SelfProtectionOperation.EnterMaintenance && Operation!=SelfProtectionOperation.ExitMaintenance && Operation!=SelfProtectionOperation.PrepareUnload && Operation!=SelfProtectionOperation.RegisterTray && Operation!=SelfProtectionOperation.UnregisterTray) throw new InvalidDataException("自保护操作无效");
+            if(Identity.SessionId!=0) throw new InvalidDataException("服务身份必须属于 session 0");
+            if(Operation==SelfProtectionOperation.Activate) { if(MaintenanceLeaseId!=null || MaintenanceExpiresUtcFileTime!=0 || TrayIdentity!=null) throw new InvalidDataException("激活请求不得携带维护租约或托盘身份"); return; }
+            if(Operation==SelfProtectionOperation.RegisterTray || Operation==SelfProtectionOperation.UnregisterTray) {
+                if(!String.IsNullOrWhiteSpace(MaintenanceLeaseId) || MaintenanceExpiresUtcFileTime!=0 || TrayIdentity==null) throw new InvalidDataException("托盘登记请求字段无效");
+                TrayIdentity.Validate(); if(TrayIdentity.SessionId<=0) throw new InvalidDataException("托盘必须属于用户会话"); return;
+            }
             if(String.IsNullOrWhiteSpace(MaintenanceLeaseId) || MaintenanceLeaseId.Length!=32 || !Guid.TryParseExact(MaintenanceLeaseId,"N",out ignored)) throw new InvalidDataException("维护租约无效");
             if((Operation==SelfProtectionOperation.EnterMaintenance || Operation==SelfProtectionOperation.PrepareUnload) && MaintenanceExpiresUtcFileTime<=utcNow.ToFileTimeUtc()) throw new InvalidDataException("维护租约已过期");
         }
@@ -95,6 +116,10 @@ namespace Ycsz {
             var request=new SelfProtectionRequest { RequestId=Guid.NewGuid().ToString("N"),Operation=operation,Identity=identity,MaintenanceLeaseId=leaseId,MaintenanceExpiresUtcFileTime=expiresUtc==DateTime.MinValue?0:expiresUtc.ToFileTimeUtc() };
             request.Validate(validationUtc.ToUniversalTime());
             return request;
+        }
+        public static SelfProtectionRequest CreateTray(SelfProtectionOperation operation,ProtectionIdentity serviceIdentity,ProtectionIdentity trayIdentity,DateTime validationUtc) {
+            var request=new SelfProtectionRequest { RequestId=Guid.NewGuid().ToString("N"),Operation=operation,Identity=serviceIdentity,TrayIdentity=trayIdentity };
+            request.Validate(validationUtc.ToUniversalTime()); return request;
         }
     }
 
@@ -130,7 +155,7 @@ namespace Ycsz {
         public SelfProtectionStatus Copy() { return new SelfProtectionStatus { State=State,DriverLoaded=DriverLoaded,Capabilities=Capabilities,Failure=Failure,MaintenanceLeaseId=MaintenanceLeaseId,MaintenanceUntilUtc=MaintenanceUntilUtc }; }
         public string UserText() {
             if(State==SelfProtectionState.Active) return "内核自保护已启用（进程句柄/文件过滤；服务停止需认证维护）";
-            if(State==SelfProtectionState.Maintenance) return "内核自保护维护窗口已授权（最长 15 分钟）";
+            if(State==SelfProtectionState.Maintenance) return "内核自保护维护窗口已授权（最长 15 分钟；安装目录与 ProgramData 文件过滤仍在）";
             if(State==SelfProtectionState.Degraded) return "内核自保护不完整，未满足全部保护能力";
             if(State==SelfProtectionState.Starting) return "内核自保护正在初始化";
             if(State==SelfProtectionState.Failed) return "内核自保护未启用："+(Failure??"驱动通信失败");
@@ -149,6 +174,7 @@ namespace Ycsz {
         static readonly SelfProtectionCapability Required=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation;
         readonly object sync=new object(); readonly ISelfProtectionTransport transport; readonly Func<ProtectionIdentity> identityFactory; readonly Func<string,SelfProtectionOperation,bool> authorizer; readonly TimeSpan maintenanceWindow; string maintenanceSession;
         ProtectionIdentity registeredIdentity;
+        ProtectionIdentity registeredTray;
         SelfProtectionStatus status=SelfProtectionStatus.Unavailable("驱动未构建或未加载");
 
         public SelfProtectionCoordinator(ISelfProtectionTransport transport,Func<ProtectionIdentity> identityFactory,Func<string,SelfProtectionOperation,bool> authorizer,TimeSpan maintenanceWindow) {
@@ -161,8 +187,33 @@ namespace Ycsz {
         public bool Activate(DateTime utcNow) {
             lock(sync) {
                 status.State=SelfProtectionState.Starting; status.Failure=null;
-                try { registeredIdentity=identityFactory(); return ApplyReply(transport.Send(SelfProtectionRequest.Create(SelfProtectionOperation.Activate,registeredIdentity,null,DateTime.MinValue,utcNow))); }
+                try { registeredIdentity=identityFactory(); registeredTray=null; return ApplyReply(transport.Send(SelfProtectionRequest.Create(SelfProtectionOperation.Activate,registeredIdentity,null,DateTime.MinValue,utcNow))); }
                 catch(Exception e) { Fail(e.Message); return false; }
+            }
+        }
+
+        public bool RegisterTray(ProtectionIdentity trayIdentity,DateTime utcNow) {
+            lock(sync) {
+                if(status.State!=SelfProtectionState.Active || registeredIdentity==null || trayIdentity==null) return false;
+                try {
+                    var reply=transport.Send(SelfProtectionRequest.CreateTray(SelfProtectionOperation.RegisterTray,registeredIdentity,trayIdentity,utcNow));
+                    reply.Validate();
+                    if(!reply.Accepted || !reply.DriverLoaded || (reply.Capabilities&Required)!=Required) { Fail(reply.Error??"驱动拒绝登记托盘"); return false; }
+                    registeredTray=trayIdentity; status.DriverLoaded=true; status.Capabilities=reply.Capabilities; status.Failure=null; return true;
+                } catch(Exception e) { Fail(e.Message); return false; }
+            }
+        }
+
+        public bool UnregisterTray(ProtectionIdentity trayIdentity,DateTime utcNow) {
+            lock(sync) {
+                if(registeredIdentity==null || registeredTray==null) return true;
+                if(trayIdentity==null || trayIdentity.ProcessId!=registeredTray.ProcessId || trayIdentity.StartTimeUtcFileTime!=registeredTray.StartTimeUtcFileTime || !String.Equals(trayIdentity.InstanceNonce,registeredTray.InstanceNonce,StringComparison.Ordinal)) return false;
+                try {
+                    var reply=transport.Send(SelfProtectionRequest.CreateTray(SelfProtectionOperation.UnregisterTray,registeredIdentity,trayIdentity,utcNow));
+                    reply.Validate();
+                    if(!reply.Accepted || !reply.DriverLoaded) { Fail(reply.Error??"驱动拒绝注销托盘"); return false; }
+                    registeredTray=null; status.DriverLoaded=true; status.Capabilities=reply.Capabilities; status.Failure=null; return true;
+                } catch(Exception e) { Fail(e.Message); return false; }
             }
         }
 
@@ -197,7 +248,7 @@ namespace Ycsz {
                 try {
                     var reply=transport.Send(SelfProtectionRequest.Create(SelfProtectionOperation.PrepareUnload,registeredIdentity,status.MaintenanceLeaseId,status.MaintenanceUntilUtc,utcNow));
                     reply.Validate();
-                    if(!reply.Accepted || !reply.DriverLoaded || reply.Capabilities!=SelfProtectionCapability.None) { Fail(reply.Error??"驱动拒绝准备卸载"); return false; }
+                    if(!reply.Accepted || !reply.DriverLoaded || reply.Capabilities!=SelfProtectionCapability.FileMutation) { Fail(reply.Error??"驱动拒绝准备卸载"); return false; }
                     return true;
                 } catch(Exception e) { Fail(e.Message); return false; }
             }

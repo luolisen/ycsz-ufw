@@ -68,10 +68,16 @@ $cat = Join-Path $package 'YcszProtection.cat'
 foreach ($path in @($inf,$sys,$cat)) { if (!(Test-Path -LiteralPath $path)) { throw "Missing signed protection package file: $path" } }
 Assert-ValidSignature $sys
 Assert-ValidSignature $cat
+Assert-ProtectionCatalogMembers $package | Out-Null
 
 $image = Join-Path $install 'Ycsz.exe'
 if (!(Test-Path -LiteralPath $image)) { throw "Installed Ycsz.exe was not found: $image" }
 $ntImage = ConvertTo-NtPath $image
+$dataRoot = Get-ProtectionDataRoot
+if (!(Test-Path -LiteralPath $dataRoot -PathType Container)) { New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null }
+$dataRootItem = Get-Item -LiteralPath $dataRoot -Force
+if (($dataRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'The ProgramData protection root must not be a reparse point.' }
+$ntDataRoot = ConvertTo-NtPath $dataRoot
 $service = Get-ServiceOrNull 'YcszFirewall'
 if ($null -eq $service) { throw 'YcszFirewall must be installed before the protection driver.' }
 $serviceInfo = Get-CimInstance Win32_Service -Filter "Name='YcszFirewall'"
@@ -85,10 +91,12 @@ if ($null -ne $existingDriver -and $existingDriver.Status -ne 'Stopped') {
 $trustedKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\YcszProtection\Parameters'
 $hadTrusted = Test-Path -LiteralPath $trustedKey
 $oldTrusted = if ($hadTrusted) { (Get-ItemProperty -LiteralPath $trustedKey -Name TrustedImagePath -ErrorAction SilentlyContinue).TrustedImagePath } else { $null }
+$oldDataRoot = if ($hadTrusted) { (Get-ItemProperty -LiteralPath $trustedKey -Name TrustedDataRoot -ErrorAction SilentlyContinue).TrustedDataRoot } else { $null }
 $driverWasRegistered = $null -ne (Get-ServiceOrNull 'YcszProtection')
 $appWasRunning = $service.Status -ne 'Stopped'
 $protectionWasRunning = $false
 $appStoppedByScript = $false
+$publishedAdded = $null
 
 try {
     if ($appWasRunning) {
@@ -105,13 +113,19 @@ try {
     $sidOutput = (& (Join-Path $env:WINDIR 'System32\sc.exe') qsidtype YcszFirewall 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0 -or $sidOutput -notmatch 'UNRESTRICTED') { throw 'YcszFirewall service SID was not confirmed as UNRESTRICTED.' }
 
-    & (Join-Path $env:WINDIR 'System32\pnputil.exe') /add-driver $inf /install | Out-Host
+    $pnputilOutput = & (Join-Path $env:WINDIR 'System32\pnputil.exe') /add-driver $inf /install 2>&1 | Out-String
+    $pnputilOutput | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "pnputil driver installation failed: $LASTEXITCODE" }
+    $publishedMatch = [regex]::Match($pnputilOutput,'(?im)Published Name\s*:\s*(oem[0-9]+\.inf)')
+    if ($publishedMatch.Success) { $publishedAdded = $publishedMatch.Groups[1].Value }
 
     New-Item -Path $trustedKey -Force | Out-Null
     New-ItemProperty -LiteralPath $trustedKey -Name TrustedImagePath -PropertyType String -Value $ntImage -Force | Out-Null
+    New-ItemProperty -LiteralPath $trustedKey -Name TrustedDataRoot -PropertyType String -Value $ntDataRoot -Force | Out-Null
     $configured = (Get-ItemProperty -LiteralPath $trustedKey -Name TrustedImagePath).TrustedImagePath
     if ($configured -cne $ntImage) { throw 'TrustedImagePath verification failed.' }
+    $configuredDataRoot = (Get-ItemProperty -LiteralPath $trustedKey -Name TrustedDataRoot).TrustedDataRoot
+    if ($configuredDataRoot -cne $ntDataRoot) { throw 'TrustedDataRoot verification failed.' }
 
     $protection = Get-ServiceOrNull 'YcszProtection'
     if ($null -eq $protection) { throw 'The INF did not register YcszProtection.' }
@@ -122,7 +136,9 @@ try {
     Start-Service -Name YcszFirewall
     (Get-Service YcszFirewall).WaitForStatus('Running',[TimeSpan]::FromSeconds(30))
     if ((Get-Service YcszFirewall).Status -ne 'Running') { throw 'YcszFirewall did not restart after protection activation.' }
-    Write-Output "PASS protection installed and trusted image configured: $ntImage"
+    $activation = & $image --protection-status 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { throw "YcszFirewall is Running but v2 self-protection activation was not confirmed: $activation" }
+    Write-Output "PASS protection installed, CAT members verified, and v2 activation confirmed: $ntImage / $ntDataRoot"
 } catch {
     $failure = $_
     try { if ((Get-ServiceOrNull 'YcszFirewall').Status -ne 'Stopped') { Stop-Service YcszFirewall -ErrorAction SilentlyContinue; Wait-Stopped 'YcszFirewall' } } catch {}
@@ -130,8 +146,11 @@ try {
     try {
         if ($hadTrusted) { Set-ItemProperty -LiteralPath $trustedKey -Name TrustedImagePath -Value $oldTrusted }
         else { Remove-ItemProperty -LiteralPath $trustedKey -Name TrustedImagePath -ErrorAction SilentlyContinue }
+        if ($hadTrusted -and $null -ne $oldDataRoot) { Set-ItemProperty -LiteralPath $trustedKey -Name TrustedDataRoot -Value $oldDataRoot }
+        else { Remove-ItemProperty -LiteralPath $trustedKey -Name TrustedDataRoot -ErrorAction SilentlyContinue }
     } catch {}
     try { if (!$driverWasRegistered) { & (Join-Path $env:WINDIR 'System32\sc.exe') delete YcszProtection | Out-Null } } catch {}
+    try { if (!$driverWasRegistered -and $publishedAdded -match '^oem[0-9]+\.inf$') { & (Join-Path $env:WINDIR 'System32\pnputil.exe') /delete-driver $publishedAdded /uninstall | Out-Null } } catch {}
     try { if ($appWasRunning -and $appStoppedByScript) { Start-Service YcszFirewall } } catch {}
     throw "Protection installation rolled back where possible. Original error: $failure"
 }

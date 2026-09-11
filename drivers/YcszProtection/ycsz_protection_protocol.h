@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define YCP_PROTOCOL_VERSION              1u
+#define YCP_PROTOCOL_VERSION              2u
 #define YCP_MAX_PATH_CHARS               512u
 #define YCP_MAX_LEASE_SECONDS            900u
 #define YCP_IMAGE_NAME                   L"Ycsz.exe"
@@ -33,12 +33,18 @@ extern "C" {
     CTL_CODE(YCP_DEVICE_TYPE, YCP_IOCTL_FUNCTION_BASE + 3, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
 #define IOCTL_YCP_PREPARE_UNLOAD \
     CTL_CODE(YCP_DEVICE_TYPE, YCP_IOCTL_FUNCTION_BASE + 4, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
+#define IOCTL_YCP_REGISTER_TRAY \
+    CTL_CODE(YCP_DEVICE_TYPE, YCP_IOCTL_FUNCTION_BASE + 5, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
+#define IOCTL_YCP_UNREGISTER_TRAY \
+    CTL_CODE(YCP_DEVICE_TYPE, YCP_IOCTL_FUNCTION_BASE + 6, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
 
 #define YCP_STATE_ACTIVE                 0x00000001u
 #define YCP_STATE_PROCESS_CALLBACK       0x00000002u
 #define YCP_STATE_FILE_FILTER            0x00000004u
 #define YCP_STATE_MAINTENANCE            0x00000008u
 #define YCP_STATE_UNLOAD_PREPARED       0x00000010u
+#define YCP_STATE_TRAY_REGISTERED        0x00000020u
+#define YCP_STATE_DATA_ROOT              0x00000040u
 #define YCP_STATE_ERROR                  0x80000000u
 
 typedef struct _YCP_CONTROL_HEADER {
@@ -49,7 +55,7 @@ typedef struct _YCP_CONTROL_HEADER {
 
 typedef struct _YCP_PROCESS_IDENTITY {
     ULONG ProcessId;
-    ULONG Reserved;
+    ULONG SessionId;
     LONGLONG CreateTime100ns;
     UCHAR ImageSha256[32];
     UCHAR InstanceNonce[16];
@@ -60,7 +66,13 @@ typedef struct _YCP_ACTIVATE_REQUEST {
     YCP_CONTROL_HEADER Header;
     YCP_PROCESS_IDENTITY Identity;
     WCHAR ProtectedRoot[YCP_MAX_PATH_CHARS];
+    WCHAR ProtectedDataRoot[YCP_MAX_PATH_CHARS];
 } YCP_ACTIVATE_REQUEST;
+
+typedef struct _YCP_TRAY_REQUEST {
+    YCP_CONTROL_HEADER Header;
+    YCP_PROCESS_IDENTITY Identity;
+} YCP_TRAY_REQUEST;
 
 typedef struct _YCP_MAINTENANCE_REQUEST {
     YCP_CONTROL_HEADER Header;
@@ -79,7 +91,7 @@ typedef struct _YCP_STATUS {
     ULONG State;
     ULONG LastStatus;
     ULONG TargetPid;
-    ULONG Reserved;
+    ULONG TargetSessionId;
     LONGLONG TargetCreateTime100ns;
     LONGLONG MaintenanceExpiresAt100ns;
     UCHAR LeaseId[16];
@@ -87,6 +99,8 @@ typedef struct _YCP_STATUS {
     UCHAR InstanceNonce[16];
     WCHAR ImagePath[YCP_MAX_PATH_CHARS];
     WCHAR ProtectedRoot[YCP_MAX_PATH_CHARS];
+    WCHAR ProtectedDataRoot[YCP_MAX_PATH_CHARS];
+    YCP_PROCESS_IDENTITY TrayIdentity;
 } YCP_STATUS;
 
 #ifdef __cplusplus
