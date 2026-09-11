@@ -5,6 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'Protection-Validation.ps1')
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -75,7 +76,11 @@ $service = Get-ServiceOrNull 'YcszFirewall'
 if ($null -eq $service) { throw 'YcszFirewall must be installed before the protection driver.' }
 $serviceInfo = Get-CimInstance Win32_Service -Filter "Name='YcszFirewall'"
 if ($serviceInfo.StartName -ne 'LocalSystem') { throw 'YcszFirewall must run as LocalSystem.' }
-if ($serviceInfo.PathName -notmatch [regex]::Escape($image)) { throw 'YcszFirewall image path does not match the fixed installation path.' }
+Assert-ProtectionServiceCommand $serviceInfo.PathName $image
+$existingDriver = Get-ServiceOrNull 'YcszProtection'
+if ($null -ne $existingDriver -and $existingDriver.Status -ne 'Stopped') {
+    throw 'An existing protection driver is running. Complete authenticated maintenance and unload it before changing its cached trust configuration.'
+}
 
 $trustedKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\YcszProtection\Parameters'
 $hadTrusted = Test-Path -LiteralPath $trustedKey
