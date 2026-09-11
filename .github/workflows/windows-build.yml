@@ -51,7 +51,10 @@ jobs:
           ) | Where-Object { Test-Path $_ }
           $infverif = Get-ChildItem $toolRoots -Filter InfVerif.exe -Recurse | Sort-Object FullName -Descending | Select-Object -First 1
           if (!$infverif) { throw 'InfVerif.exe was not found on the WDK runner.' }
-          & $infverif.FullName /w /v "$env:GITHUB_WORKSPACE\drivers\YcszProtection\YcszProtection.inf" | Tee-Object artifacts/infverif-results-windows.txt
+          $stampedInf = Get-ChildItem "$env:GITHUB_WORKSPACE\artifacts\driver" -Filter YcszProtection.inf -Recurse | Sort-Object FullName -Descending | Select-Object -First 1
+          if (!$stampedInf) { throw 'The WDK build did not produce a stamped YcszProtection.inf under artifacts/driver.' }
+          Write-Host "Validating stamped INF: $($stampedInf.FullName)"
+          & $infverif.FullName /w /v $stampedInf.FullName | Tee-Object artifacts/infverif-results-windows.txt
           if ($LASTEXITCODE -ne 0) { throw "InfVerif failed with exit code $LASTEXITCODE" }
       - name: Compile, test and package
         shell: powershell
