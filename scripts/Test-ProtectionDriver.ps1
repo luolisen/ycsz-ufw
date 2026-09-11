@@ -12,18 +12,19 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$results = New-Object System.Collections.Generic.List[object]
+$results = New-Object 'System.Collections.Generic.List[object]'
 
 function Add-Result([string]$Name,[string]$Status,[string]$Detail) {
     [void]$results.Add([pscustomobject]@{ Name=$Name; Status=$Status; Detail=$Detail })
 }
 
 function Write-Results {
+    $snapshot = $results.ToArray()
     $summary = [pscustomobject]@{
         Mode=$Mode
         GeneratedUtc=(Get-Date).ToUniversalTime().ToString('o')
-        Results=@($results)
-        Uncovered=@($results | Where-Object { $_.Status -eq 'BLOCKED' } | ForEach-Object { $_.Name + ': ' + $_.Detail })
+        Results=$snapshot
+        Uncovered=@($snapshot | Where-Object { $_.Status -eq 'BLOCKED' } | ForEach-Object { $_.Name + ': ' + $_.Detail })
     }
     $json = $summary | ConvertTo-Json -Depth 6
     if ($ResultPath) { Set-Content -LiteralPath $ResultPath -Value $json -Encoding UTF8 }
