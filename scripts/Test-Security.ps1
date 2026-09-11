@@ -12,6 +12,18 @@ $madeUser = $false
 $ownsData = $false
 $madeService = $false
 function NativeCheck([string]$operation) { if ($LASTEXITCODE) { throw "$operation failed: $LASTEXITCODE" } }
+function Remove-FixturePath([string]$Path) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while (Test-Path -LiteralPath $Path) {
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            return
+        } catch {
+            if ([DateTime]::UtcNow -ge $deadline) { throw }
+            Start-Sleep -Seconds 1
+        }
+    }
+}
 try {
     New-Item -ItemType Directory $fixture | Out-Null
     Copy-Item "$repo\artifacts\app\Ycsz.exe","$repo\artifacts\app\Ycsz.Core.dll","$repo\artifacts\app\Ycsz.exe.config","$repo\artifacts\app\System.ps1","$repo\artifacts\app\SecurityProbe.exe","$repo\artifacts\Ycsz-Client-Setup.exe","$repo\artifacts\Ycsz-Client-Setup-NoRuntime.exe" $fixture
@@ -85,10 +97,13 @@ ${EndIf}
 } finally {
     foreach ($name in @('YCSZ_TEST_USER','YCSZ_TEST_PASSWORD','YCSZ_TEST_SERVICE_PID','YCSZ_DISPOSABLE_TEST')) { [Environment]::SetEnvironmentVariable($name,$null,'Process') }
     if ($madeService) {
+        $service = Get-CimInstance Win32_Service -Filter "Name='YcszFirewall'" -ErrorAction SilentlyContinue
+        $servicePid = if ($service) { [int]$service.ProcessId } else { 0 }
         Stop-Service YcszFirewall -ErrorAction SilentlyContinue
+        if ($servicePid -gt 0) { Wait-Process -Id $servicePid -Timeout 30 -ErrorAction SilentlyContinue }
         & sc.exe delete YcszFirewall | Out-Null
     }
     if ($madeUser) { Remove-LocalUser -Name $user }
-    if ($ownsData -and (Test-Path $data)) { Remove-Item -LiteralPath $data -Recurse -Force }
-    if (Test-Path $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force }
+    if ($ownsData -and (Test-Path $data)) { Remove-FixturePath $data }
+    if (Test-Path $fixture) { Remove-FixturePath $fixture }
 }
