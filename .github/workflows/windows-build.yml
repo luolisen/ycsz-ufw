@@ -24,17 +24,18 @@ jobs:
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
           if (!(Test-Path $vswhere)) { throw "vswhere.exe was not found at $vswhere" }
           $componentIds = @('Microsoft.Windows.DriverKit', 'Component.Microsoft.Windows.DriverKit.BuildTools')
-          $installations = @()
+          $vsPath = $null
           foreach ($componentId in $componentIds) {
-            $json = & $vswhere -all -products * -format json -requires $componentId -includePackages 2>$null
-            if ($json) { $installations += ($json | ConvertFrom-Json) }
+            $candidate = & $vswhere -latest -products * -requires $componentId -property installationPath 2>$null |
+              Where-Object { $_ -and (Test-Path (Join-Path $_ 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')) } |
+              Select-Object -First 1
+            if ($candidate) { $vsPath = [string]$candidate; break }
           }
-          $vs = $installations | Sort-Object -Property installationPath -Unique | Select-Object -First 1
-          if (!$vs) { throw 'No Visual Studio installation with the WDK component was found.' }
-          $devShell = Join-Path $vs.installationPath 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll'
+          if (!$vsPath) { throw 'No Visual Studio installation with the WDK component was found.' }
+          $devShell = Join-Path $vsPath 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll'
           if (!(Test-Path $devShell)) { throw "Visual Studio Developer Shell was not found at $devShell" }
           Import-Module $devShell
-          Enter-VsDevShell -VsInstallPath $vs.installationPath
+          Enter-VsDevShell -VsInstallPath $vsPath
           Write-Host "VSINSTALLDIR=$env:VSINSTALLDIR"
           Write-Host "VSCMD_VER=$env:VSCMD_VER"
           Write-Host "WDKBuildFolder=$env:WDKBuildFolder"
