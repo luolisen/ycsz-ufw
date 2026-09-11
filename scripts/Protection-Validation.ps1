@@ -57,3 +57,11 @@ function Assert-ProtectionPackage([string]$PublishedName,$Package) {
         throw 'The selected driver-store package is not bound to YcszProtection.cat.'
     }
 }
+
+function Assert-ProtectionRollbackStopped($ApplicationService,$DriverService) {
+    foreach ($service in @($ApplicationService,$DriverService)) {
+        if ($null -ne $service -and $service.Status -ne 'Stopped') {
+            throw 'Rollback may not alter configuration or remove files while a product service is not stopped.'
+        }
+    }
+}

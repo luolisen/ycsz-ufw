@@ -35,4 +35,13 @@ Must-Reject { Assert-ProtectionPackage 'oem12.inf' $badCatalog }
 Must-Reject { Assert-ProtectionPackage 'oem12.inf' $null }
 Must-Reject { Assert-ProtectionPackage 'oem12.inf' @($package,$package) }
 Must-Reject { Assert-ProtectionCatalogMembers (Join-Path $env:TEMP 'missing-ycsz-protection-package') }
+$stopped = [pscustomobject]@{ Status='Stopped' }
+Assert-ProtectionRollbackStopped $null $null
+Assert-ProtectionRollbackStopped $stopped $stopped
+$count += 2
+foreach ($state in @('Running','StartPending','StopPending','Paused')) {
+    $notStopped = [pscustomobject]@{ Status=$state }
+    Must-Reject { Assert-ProtectionRollbackStopped $notStopped $stopped }
+    Must-Reject { Assert-ProtectionRollbackStopped $stopped $notStopped }
+}
 Write-Output "PASS $count pure protection install/remove input checks; no service, driver or system configuration changed."

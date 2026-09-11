@@ -21,7 +21,11 @@ function Invoke-Sc([string[]]$Arguments,[string]$Operation) {
 }
 
 function Get-ServiceOrNull([string]$Name) {
-    Get-Service -Name $Name -ErrorAction SilentlyContinue
+    try { Get-Service -Name $Name -ErrorAction Stop }
+    catch {
+        if ($_.FullyQualifiedErrorId -like 'NoServiceFoundForGivenName*') { return $null }
+        throw
+    }
 }
 
 function Wait-Stopped([string]$Name) {
@@ -74,7 +78,7 @@ $image = Join-Path $install 'Ycsz.exe'
 if (!(Test-Path -LiteralPath $image)) { throw "Installed Ycsz.exe was not found: $image" }
 $ntImage = ConvertTo-NtPath $image
 $dataRoot = Get-ProtectionDataRoot
-if (!(Test-Path -LiteralPath $dataRoot -PathType Container)) { New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null }
+if (!(Test-Path -LiteralPath $dataRoot -PathType Container)) { throw 'The installed product data directory is missing; repair the application first.' }
 $dataRootItem = Get-Item -LiteralPath $dataRoot -Force
 if (($dataRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'The ProgramData protection root must not be a reparse point.' }
 $ntDataRoot = ConvertTo-NtPath $dataRoot
@@ -97,6 +101,11 @@ $appWasRunning = $service.Status -ne 'Stopped'
 $protectionWasRunning = $false
 $appStoppedByScript = $false
 $publishedAdded = $null
+$appKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\YcszFirewall'
+$oldSidType = (Get-ItemProperty -LiteralPath $appKey -ErrorAction Stop).ServiceSidType
+$oldSidName = switch ([int]$oldSidType) { 0 { 'none' }; 1 { 'unrestricted' }; 3 { 'restricted' }; default { throw 'Unknown original service SID type; installation cannot safely roll back.' } }
+$packagesBefore = @(Get-WindowsDriver -Online -ErrorAction Stop | ForEach-Object { $_.Driver })
+$configurationTouched = $false
 
 try {
     if ($appWasRunning) {
@@ -109,6 +118,7 @@ try {
         }
     }
 
+    $configurationTouched = $true
     Invoke-Sc @('sidtype','YcszFirewall','unrestricted') 'YcszFirewall service SID configuration'
     $sidOutput = (& (Join-Path $env:WINDIR 'System32\sc.exe') qsidtype YcszFirewall 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0 -or $sidOutput -notmatch 'UNRESTRICTED') { throw 'YcszFirewall service SID was not confirmed as UNRESTRICTED.' }
@@ -117,7 +127,11 @@ try {
     $pnputilOutput | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "pnputil driver installation failed: $LASTEXITCODE" }
     $publishedMatch = [regex]::Match($pnputilOutput,'(?im)Published Name\s*:\s*(oem[0-9]+\.inf)')
-    if ($publishedMatch.Success) { $publishedAdded = $publishedMatch.Groups[1].Value }
+    if ($publishedMatch.Success -and $packagesBefore -notcontains $publishedMatch.Groups[1].Value) {
+        $candidate = $publishedMatch.Groups[1].Value
+        Assert-ProtectionPackage $candidate (Get-WindowsDriver -Online -Driver $candidate -ErrorAction Stop)
+        $publishedAdded = $candidate
+    }
 
     New-Item -Path $trustedKey -Force | Out-Null
     New-ItemProperty -LiteralPath $trustedKey -Name TrustedImagePath -PropertyType String -Value $ntImage -Force | Out-Null
@@ -141,16 +155,50 @@ try {
     Write-Output "PASS protection installed, CAT members verified, and v2 activation confirmed: $ntImage / $ntDataRoot"
 } catch {
     $failure = $_
-    try { if ((Get-ServiceOrNull 'YcszFirewall').Status -ne 'Stopped') { Stop-Service YcszFirewall -ErrorAction SilentlyContinue; Wait-Stopped 'YcszFirewall' } } catch {}
-    try { if ($protectionWasRunning) { Stop-Service YcszProtection -ErrorAction SilentlyContinue } } catch {}
+    if (!$configurationTouched) { throw "Protection preflight/stop failed before configuration changes: $failure" }
+    # Stop failure is not permission to rewrite a live driver's cached trust or
+    # delete its registration. Preserve the recoverable state and report it.
+    $rollbackErrors = New-Object 'System.Collections.Generic.List[string]'
     try {
-        if ($hadTrusted) { Set-ItemProperty -LiteralPath $trustedKey -Name TrustedImagePath -Value $oldTrusted }
+        $currentApp = Get-ServiceOrNull 'YcszFirewall'
+        if ($currentApp -and $currentApp.Status -ne 'Stopped') {
+            Stop-Service YcszFirewall -ErrorAction Stop
+            Wait-Stopped 'YcszFirewall'
+        }
+        $currentDriver = Get-ServiceOrNull 'YcszProtection'
+        if ($currentDriver -and $currentDriver.Status -ne 'Stopped') {
+            & (Join-Path $env:WINDIR 'System32\fltmc.exe') unload YcszProtection | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "Authenticated driver unload was not available: $LASTEXITCODE" }
+        }
+        $currentApp = Get-ServiceOrNull 'YcszFirewall'
+        $currentDriver = Get-ServiceOrNull 'YcszProtection'
+        Assert-ProtectionRollbackStopped $currentApp $currentDriver
+    } catch {
+        throw "Installation failed: $failure. Rollback could not establish stopped services: $_. Trust values, registration and driver-store files were preserved; authenticated maintenance is required."
+    }
+    try {
+        if ($null -ne $oldTrusted) { Set-ItemProperty -LiteralPath $trustedKey -Name TrustedImagePath -Value $oldTrusted }
         else { Remove-ItemProperty -LiteralPath $trustedKey -Name TrustedImagePath -ErrorAction SilentlyContinue }
-        if ($hadTrusted -and $null -ne $oldDataRoot) { Set-ItemProperty -LiteralPath $trustedKey -Name TrustedDataRoot -Value $oldDataRoot }
+        if ($null -ne $oldDataRoot) { Set-ItemProperty -LiteralPath $trustedKey -Name TrustedDataRoot -Value $oldDataRoot }
         else { Remove-ItemProperty -LiteralPath $trustedKey -Name TrustedDataRoot -ErrorAction SilentlyContinue }
-    } catch {}
-    try { if (!$driverWasRegistered) { & (Join-Path $env:WINDIR 'System32\sc.exe') delete YcszProtection | Out-Null } } catch {}
-    try { if (!$driverWasRegistered -and $publishedAdded -match '^oem[0-9]+\.inf$') { & (Join-Path $env:WINDIR 'System32\pnputil.exe') /delete-driver $publishedAdded /uninstall | Out-Null } } catch {}
-    try { if ($appWasRunning -and $appStoppedByScript) { Start-Service YcszFirewall } } catch {}
-    throw "Protection installation rolled back where possible. Original error: $failure"
+        Invoke-Sc @('sidtype','YcszFirewall',$oldSidName) 'Original service SID restore'
+        if ($null -ne $oldSidType) { Set-ItemProperty -LiteralPath $appKey -Name ServiceSidType -Value $oldSidType }
+        else { Remove-ItemProperty -LiteralPath $appKey -Name ServiceSidType -ErrorAction SilentlyContinue }
+    } catch { $rollbackErrors.Add("Configuration restore failed: $_") }
+    if (!$driverWasRegistered -and $rollbackErrors.Count -eq 0) {
+        try {
+            if (Get-ServiceOrNull 'YcszProtection') { Invoke-Sc @('delete','YcszProtection') 'Protection registration rollback' }
+            if ($publishedAdded) {
+                Assert-ProtectionPackage $publishedAdded (Get-WindowsDriver -Online -Driver $publishedAdded -ErrorAction Stop)
+                & (Join-Path $env:WINDIR 'System32\pnputil.exe') /delete-driver $publishedAdded /uninstall | Out-Host
+                if ($LASTEXITCODE -ne 0) { throw "Driver-store rollback failed: $LASTEXITCODE" }
+            }
+        } catch { $rollbackErrors.Add("Package restore failed: $_") }
+    }
+    if ($appWasRunning -and $appStoppedByScript -and $rollbackErrors.Count -eq 0) {
+        try { Start-Service YcszFirewall -ErrorAction Stop }
+        catch { $rollbackErrors.Add("Application restart failed: $_") }
+    }
+    if ($rollbackErrors.Count) { throw "Installation failed: $failure. Rollback incomplete: $($rollbackErrors -join '; ')" }
+    throw "Installation failed; stopped-state configuration rollback completed: $failure"
 }
