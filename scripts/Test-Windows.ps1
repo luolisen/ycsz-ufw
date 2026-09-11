@@ -69,9 +69,13 @@ if ($Mode -eq 'Static') {
     }
     Check 'Protection install and removal gates' {
         $install=Get-Content (Join-Path $repo 'scripts\Install-Protection.ps1') -Raw
+        $validation=Get-Content (Join-Path $repo 'scripts\Protection-Validation.ps1') -Raw
         $remove=Get-Content (Join-Path $repo 'scripts\Remove-Protection.ps1') -Raw
-        foreach ($needle in @('TrustedImagePath','TrustedDataRoot','sidtype','QueryDosDevice','Get-AuthenticodeSignature','Assert-ProtectionCatalogMembers','signtool','--protection-status','pnputil','oldDataRoot')) {
+        foreach ($needle in @('TrustedImagePath','TrustedDataRoot','sidtype','QueryDosDevice','Get-AuthenticodeSignature','Assert-ProtectionCatalogMembers','Protection-Validation.ps1','--protection-status','pnputil','oldDataRoot')) {
             if ($install -notmatch [regex]::Escape($needle)) { throw "Protection installer gate missing: $needle" }
+        }
+        foreach ($needle in @('Resolve-ProtectionSignTool','signtool.exe','verify /kp /c','LASTEXITCODE')) {
+            if ($validation -notmatch [regex]::Escape($needle)) { throw "Protection validation gate missing: $needle" }
         }
         foreach ($needle in @('PREPARE_UNLOAD','fltmc.exe','unload YcszProtection','No service was deleted')) {
             if ($remove -notmatch [regex]::Escape($needle)) { throw "Protection remover gate missing: $needle" }
