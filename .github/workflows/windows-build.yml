@@ -19,12 +19,28 @@ jobs:
         shell: powershell
         run: choco install nsis --no-progress -y
       - name: Build unsigned WDK driver and INF package
-        shell: powershell
-        run: >-
-          msbuild .\drivers\YcszProtection\YcszProtection.vcxproj
-          /p:Configuration=Release /p:Platform=x64
-          /p:YcszRepoRoot="$env:GITHUB_WORKSPACE\"
-          /m /v:minimal
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (!(Test-Path $vswhere)) { throw "vswhere.exe was not found at $vswhere" }
+          $componentIds = @('Microsoft.Windows.DriverKit', 'Component.Microsoft.Windows.DriverKit.BuildTools')
+          $installations = @()
+          foreach ($componentId in $componentIds) {
+            $json = & $vswhere -all -products * -format json -requires $componentId -includePackages 2>$null
+            if ($json) { $installations += ($json | ConvertFrom-Json) }
+          }
+          $vs = $installations | Sort-Object -Property installationPath -Unique | Select-Object -First 1
+          if (!$vs) { throw 'No Visual Studio installation with the WDK component was found.' }
+          $devShell = Join-Path $vs.installationPath 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll'
+          if (!(Test-Path $devShell)) { throw "Visual Studio Developer Shell was not found at $devShell" }
+          Import-Module $devShell
+          Enter-VsDevShell -VsInstallPath $vs.installationPath
+          Write-Host "VSINSTALLDIR=$env:VSINSTALLDIR"
+          Write-Host "VSCMD_VER=$env:VSCMD_VER"
+          Write-Host "WDKBuildFolder=$env:WDKBuildFolder"
+          Write-Host "UCRTVersion=$env:UCRTVersion"
+          Get-Command msbuild | Format-List Source
+          msbuild .\drivers\YcszProtection\YcszProtection.vcxproj /p:Configuration=Release /p:Platform=x64 /p:YcszRepoRoot="$env:GITHUB_WORKSPACE\" /m /v:minimal
       - name: Run InfVerif against the source INF
         shell: powershell
         run: |
