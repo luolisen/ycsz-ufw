@@ -59,6 +59,7 @@ if ($Mode -eq 'Static') {
     Check 'Self protection user-mode gates' {
         $program=Get-Content (Join-Path $repo 'src\Ycsz.App\Program.cs') -Raw
         $transport=Get-Content (Join-Path $repo 'src\Ycsz.Core\SelfProtectionDeviceTransport.cs') -Raw
+        $core=Get-Content (Join-Path $repo 'src\Ycsz.Core\SelfProtection.cs') -Raw
         $driver=Get-Content (Join-Path $repo 'drivers\YcszProtection\ycsz_protection.c') -Raw
         if ($program -notmatch 'new WindowsSelfProtectionTransport\(Store\.Root\)') { throw 'Service does not bind the fixed ProgramData root to the device transport' }
         if ($program -notmatch 'self-protection-enter' -or $program -notmatch 'self-protection-exit') { throw 'Authenticated maintenance IPC operations missing' }
