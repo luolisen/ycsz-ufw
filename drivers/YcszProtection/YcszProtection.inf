@@ -27,7 +27,7 @@ DelFiles=DriverFiles.Uninstall
 DelService=%ServiceName%,0x00000200
 
 [DestinationDirs]
-DefaultDestDir=12
+DefaultDestDir=13
 
 [DriverFiles]
 YcszProtection.sys
@@ -44,7 +44,7 @@ YcszProtection.sys=1
 [ServiceInstall]
 DisplayName=%ServiceDisplayName%
 Description=%ServiceDescription%
-ServiceBinary=%12%\YcszProtection.sys
+ServiceBinary=%13%\YcszProtection.sys
 Dependencies=FltMgr
 ServiceType=2
 StartType=3
@@ -53,9 +53,9 @@ LoadOrderGroup=FSFilter Activity Monitor
 AddReg=Instance.AddReg
 
 [Instance.AddReg]
-HKR,"Instances","DefaultInstance",0x00000000,%InstanceName%
-HKR,"Instances\%InstanceName%","Altitude",0x00000000,%Altitude%
-HKR,"Instances\%InstanceName%","Flags",0x00010001,0
+HKR,"Parameters\Instances","DefaultInstance",0x00000000,%InstanceName%
+HKR,"Parameters\Instances\%InstanceName%","Altitude",0x00000000,%Altitude%
+HKR,"Parameters\Instances\%InstanceName%","Flags",0x00010001,0
 
 [Strings]
 ProviderName="YCSZ"
