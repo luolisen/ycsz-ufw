@@ -108,3 +108,26 @@
 - 该 CI 只验证 unsigned 构建包和可恢复的测试 fixture；没有安装/加载驱动，没有正式签名、唯一 altitude、强制终止/挂起阻断、文件删除/重命名/映射写入或重启后 minifilter 动态证据。安全集成日志明确未测试客户端 WFP/网络强制，因此不能扩大成功结论。
 
 核对依据：微软 [CDO 控制设备卸载示例](https://github.com/microsoft/Windows-driver-samples/blob/main/filesys/miniFilter/cdo/CdoInit.c)、[CDO 连接生命周期](https://github.com/microsoft/Windows-driver-samples/blob/main/filesys/miniFilter/cdo/CdoOperations.c)、[Minifilter INF 文档](https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/creating-an-inf-file-for-a-minifilter-driver)。正式安装配置、WDK/InfVerif、签名/altitude、强制卸载及隔离 Windows 验收仍待完成。没有操作生产机器或重启。
+
+
+### 第二轮续审：用户会话、ProgramData 与动态验收工具（2026-09-12）
+
+本节覆盖本文件前述历史记录中的第二轮缺口；历史段落保留用于追溯，不应再作为当前协议状态的唯一依据。先写入实施规格 `docs/validation/SECOND-ROUND-IMPLEMENTATION-2026-09-12.md`，随后在独占工作树实施并推送：计划提交 `ee4c4bd`，实现提交 `08a85e9`，Windows PowerShell 门禁修复提交 `97c63c8`，结果序列化兼容性修复提交 `7d0b265`。
+
+本轮源码交付包括：
+
+- 协议升级到 v2，固定 ABI 为头部/身份/激活/托盘/维护/卸载/状态 `16/1088/3152/1104/40/32/4264`；状态同时返回安装根、ProgramData 根、目标会话和托盘身份。
+- 服务激活绑定实际 LocalSystem、Session 0、固定服务 SID、PID/创建时间/存活状态、安装时可信 NT 映像路径和可信 ProgramData 根；不接受 IOCTL 自报的任意 PID、路径或普通 SYSTEM 进程作为通用写入例外。
+- 托盘注册要求真实进程 PID、创建时间、用户会话、实际映像路径及身份摘要/随机标识；退出、会话变化或停止时撤销注册，旧实例不能凭 PID 重用获得权限。
+- minifilter 同时覆盖安装根和 ProgramData 根；删除/重命名/覆盖/截断、已有句柄、硬链接/重解析点及映射相关路径统一经过可信服务写入者门禁，未解析目标按失败关闭处理。
+- 安装脚本校验 INF/SYS/CAT 成员与 `CatalogFile=YcszProtection.cat` 绑定，使用 `signtool verify /kp /c`；安装失败恢复旧信任值、服务/驱动状态和已发布驱动包，并用 `Ycsz.exe --protection-status` 区分服务 Running 与实际 v2 激活。
+- 新增 `scripts/Test-ProtectionDriver.ps1`：Static 模式输出逐项 PASS/BLOCKED/FAIL JSON；Dynamic 模式必须管理员、显式 `-AllowFixtureMutation`、隔离 fixture 标记、服务/驱动已运行和固定测试根，覆盖已有句柄、映射、硬链接、重解析点、控制句柄并发卸载和根目录。无法制造普通 SYSTEM 身份或真实用户会话重启时明确输出 BLOCKED，不扩大结论。
+
+本轮验证证据：
+
+- 分支 `codex/luna-full-delivery-20260912` 的最终提交 `7d0b265`；[GitHub Actions 运行 34648815207](https://github.com/luolisen/ycsz-ufw/actions/runs/34648815207) 成功。
+- Windows `windows-2025-vs2026` runner 的 Release x64 WDK 构建、stamped INF 和 `InfVerif`（`INF is VALID`）通过；同一运行的全部 PowerShell 5.1 解析/静态门禁通过。
+- 驱动 Static 矩阵的 14 项源码/ABI/安装回滚检查为 PASS，并记录 3 项 BLOCKED：unsigned 驱动未加载、正式 CAT/唯一 altitude 未提供、终止/映射/链接运行时证据未执行。
+- 同一运行通过用户态 `64/64`、TLS `2/2`、合成网络 `9/9`、安装/移除输入 `20` 项、控制生命周期 `5` 组、WFP 事务回滚，以及隔离 Windows 管理安全集成 `1 + 32 + 3` 项检查。以上不等于驱动动态阻断已通过。
+
+仍然明确未完成：没有正式签名/唯一 altitude/CAT 信任包，没有安装或加载生产驱动，没有在隔离 Windows 上完成真实的已有句柄写入、映射写入、硬链接/重解析点、强制终止/挂起、控制句柄并发卸载和用户会话/PID 重启矩阵，也没有重启或生产机器证据。安装包校验和 Dynamic 工具已具备入口，但必须在可恢复签名靶场执行；普通更新流程在驱动仍加载时不能绕过可信服务和认证维护/卸载窗口直接替换受保护文件。
