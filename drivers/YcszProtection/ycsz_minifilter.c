@@ -70,8 +70,8 @@ YcpMarkProtectedStream(
     if (!NT_SUCCESS(status)) {
         return FALSE;
     }
-    filter = FltGetFilterFromInstance(FltObjects->Instance);
-    if (filter == NULL) {
+    status = FltGetFilterFromInstance(FltObjects->Instance, &filter);
+    if (!NT_SUCCESS(status) || filter == NULL) {
         return FALSE;
     }
     status = FltAllocateContext(
