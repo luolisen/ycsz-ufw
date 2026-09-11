@@ -39,11 +39,11 @@ if (!$SkipInstaller) {
     if (!(Test-Path $nsis)) { throw 'Install NSIS 3 using its official installer or choco install nsis.' }
     & $nsis /INPUTCHARSET UTF8 /V3 /DWITHOUT_NET48 /DCLIENT_ONLY /DOUTPUT_FILE=..\artifacts\Ycsz-Client-Setup-NoRuntime.exe installer\Ycsz.nsi | Tee-Object artifacts\client-noruntime-build-windows.txt
     if ($LASTEXITCODE) { throw 'Runtime-free client build failed' }
-    & $nsis /INPUTCHARSET UTF8 /V3 /DWITHOUT_NET48 /DOUTPUT_FILE=..\artifacts\Ycsz-Setup-1.0.0-NoRuntime-x64.exe installer\Ycsz.nsi | Tee-Object artifacts\noruntime-build-windows.txt
+    & $nsis /INPUTCHARSET UTF8 /V3 /DWITHOUT_NET48 /DOUTPUT_FILE=..\artifacts\Ycsz-Setup-1.0.1-NoRuntime-x64.exe installer\Ycsz.nsi | Tee-Object artifacts\noruntime-build-windows.txt
     if ($LASTEXITCODE) { throw 'Runtime-free manager build failed' }
     & $nsis /INPUTCHARSET UTF8 /V3 /DCLIENT_ONLY /DOUTPUT_FILE=..\artifacts\Ycsz-Client-Setup.exe installer\Ycsz.nsi | Tee-Object artifacts\client-installer-build-windows.txt
     if ($LASTEXITCODE) { throw 'Client installer build failed' }
     & $nsis /INPUTCHARSET UTF8 /V3 installer\Ycsz.nsi | Tee-Object artifacts\installer-build-windows.txt
     if ($LASTEXITCODE) { throw 'Installer build failed' }
-    Get-FileHash artifacts\Ycsz-Setup-1.0.0-x64.exe,artifacts\app\Ycsz.exe,artifacts\app\Ycsz.Core.dll -Algorithm SHA256 | Format-Table -AutoSize | Out-String | Set-Content artifacts\SHA256SUMS-WINDOWS.txt
+    Get-FileHash artifacts\Ycsz-Setup-1.0.1-x64.exe,artifacts\app\Ycsz.exe,artifacts\app\Ycsz.Core.dll -Algorithm SHA256 | Format-Table -AutoSize | Out-String | Set-Content artifacts\SHA256SUMS-WINDOWS.txt
 }

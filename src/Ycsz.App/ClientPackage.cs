@@ -15,8 +15,8 @@ namespace Ycsz {
             string local=Path.Combine(Store.Bin,name);
             if(File.Exists(local)) return local;
             if(!includeRuntime) throw new FileNotFoundException("客户端安装器缺失，请修复管理端安装",local);
-            const string release="https://github.com/luolisen/ycsz-ufw/releases/download/v1.0.0/";
-            string cache=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"YcszFirewall","Installers","1.0.0");
+            const string release="https://github.com/luolisen/ycsz-ufw/releases/download/v1.0.1/";
+            string cache=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"YcszFirewall","Installers","1.0.1");
             Directory.CreateDirectory(cache); string target=Path.Combine(cache,name),temp=target+"."+Guid.NewGuid().ToString("N")+".tmp";
             ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
             try {

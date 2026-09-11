@@ -13,7 +13,7 @@ namespace Ycsz {
         public static readonly Guid ProviderKey = new Guid("98bd74c1-15f8-4f17-a6d4-7454d018502a");
         public static readonly Guid SublayerKey = new Guid("410aa5dc-7951-491f-b771-419e7883d21e");
         static readonly Guid V4 = new Guid("c38d57d1-05a7-4c33-904f-7fbceee60e82"), V6 = new Guid("4a72393b-319f-44bc-84c3-ba54dcb3b6b4");
-        static readonly Guid RemoteAddress = new Guid("b235ae9a-1d64-49b8-a44c-5ff3d9095045"), RemotePort = new Guid("c35a604d-d22b-4e1a-91b4-68f674ee674b"), Protocol = new Guid("3971ef2b-623e-4f9a-8cb1-6e79b806b9a7"), AppId = new Guid("d78e1e87-8644-4ea5-9437-d809ecfbc971");
+        static readonly Guid RemoteAddress = new Guid("b235ae9a-1d64-49b8-a44c-5ff3d9095045"), RemotePort = new Guid("c35a604d-d22b-4e1a-91b4-68f674ee674b"), Protocol = new Guid("3971ef2b-623e-4f9a-8cb1-6e79b806b9a7"), AppId = new Guid("d78e1e87-8644-4ea5-9437-d809ecefc971");
         IntPtr engine; readonly object sync = new object(); HashSet<ulong> blockIds = new HashSet<ulong>();
         public Wfp() {
             if (IntPtr.Size != 8) throw new PlatformNotSupportedException("仅支持 x64");

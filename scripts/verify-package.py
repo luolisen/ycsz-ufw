@@ -9,7 +9,7 @@ import zipfile
 
 root = Path(__file__).resolve().parent.parent
 artifacts = root / 'artifacts'
-installer = artifacts / 'Ycsz-Setup-1.0.0-x64.exe'
+installer = artifacts / 'Ycsz-Setup-1.0.1-x64.exe'
 sevenzip = shutil.which('7zz') or shutil.which('7z')
 if not sevenzip:
     raise SystemExit('Install 7-Zip to verify NSIS contents.')
@@ -61,7 +61,7 @@ with tempfile.TemporaryDirectory(prefix='ycsz-client-package-') as folder:
             raise SystemExit('Client payload mismatch: '+name)
     if any((Path(folder)/name).exists() for name in ['SecurityProbe.exe','Ycsz.Tests.exe','TlsProbe.exe','Ycsz-Client-Setup.exe']):
         raise SystemExit('Unexpected nested installer/test fixture')
-small_installers=[artifacts/'Ycsz-Setup-1.0.0-NoRuntime-x64.exe',artifacts/'Ycsz-Client-Setup-NoRuntime.exe']
+small_installers=[artifacts/'Ycsz-Setup-1.0.1-NoRuntime-x64.exe',artifacts/'Ycsz-Client-Setup-NoRuntime.exe']
 for small in small_installers:
     run(sevenzip,'t',str(small))
     with tempfile.TemporaryDirectory(prefix='ycsz-no-runtime-') as folder:
@@ -83,10 +83,10 @@ for directory in ['src', 'scripts', 'installer', 'docs', '.github']:
 files.extend(root/name for name in ['README.md','TASK.md','PLAN.md','.gitignore'])
 files.extend([installer,client]+small_installers)
 files.extend(p for p in artifacts.iterdir() if p.is_file() and (p.suffix == '.txt' or p.name == 'SHA256SUMS'))
-archive = artifacts/'Ycsz-1.0.0-delivery.zip'
+archive = artifacts/'Ycsz-1.0.1-delivery.zip'
 with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as out:
     for path in sorted(set(files)):
-        out.write(path, str(Path('Ycsz-1.0.0')/path.relative_to(root)))
+        out.write(path, str(Path('Ycsz-1.0.1')/path.relative_to(root)))
 checks = ''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in [installer,client]+small_installers+[archive])
 (artifacts/'DELIVERY-SHA256SUMS').write_text(checks,encoding='ascii')
 print(logs[-1].strip())

@@ -22,6 +22,9 @@ jobs:
       - name: Runtime prerequisite state transitions
         shell: powershell
         run: ./scripts/Test-Net48.ps1 | Tee-Object artifacts/net48-results-windows.txt
+      - name: Native WFP filter validation without committing policy
+        shell: powershell
+        run: ./scripts/Test-Wfp.ps1 | Tee-Object artifacts/wfp-results-windows.txt
       - name: Disposable Windows security integration
         shell: powershell
         run: ./scripts/Test-Security.ps1 | Tee-Object artifacts/security-results-windows.txt

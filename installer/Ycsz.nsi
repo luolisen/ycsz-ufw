@@ -4,7 +4,7 @@ Unicode true
 !include "WinVer.nsh"
 Name "YCSZ 教育机房防火墙"
 !ifndef OUTPUT_FILE
-!define OUTPUT_FILE "..\artifacts\Ycsz-Setup-1.0.0-x64.exe"
+!define OUTPUT_FILE "..\artifacts\Ycsz-Setup-1.0.1-x64.exe"
 !endif
 OutFile "${OUTPUT_FILE}"
 InstallDir "$PROGRAMFILES64\YcszFirewall"
@@ -12,10 +12,10 @@ RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 ShowInstDetails show
 ShowUninstDetails show
-VIProductVersion "1.0.0.0"
+VIProductVersion "1.0.1.0"
 VIAddVersionKey /LANG=2052 "ProductName" "YCSZ 教育机房防火墙"
 VIAddVersionKey /LANG=2052 "FileDescription" "YCSZ 原生 Windows 客户端与管理端安装程序"
-VIAddVersionKey /LANG=2052 "FileVersion" "1.0.0"
+VIAddVersionKey /LANG=2052 "FileVersion" "1.0.1"
 VIAddVersionKey /LANG=2052 "LegalCopyright" "YCSZ contributors"
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME
@@ -153,7 +153,7 @@ Section "YCSZ" SEC_MAIN
   ${EndIf}
   Delete "$INSTDIR\client.ycsz"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "DisplayName" "YCSZ 教育机房防火墙"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "DisplayVersion" "1.0.0"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "DisplayVersion" "1.0.1"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "Publisher" "YCSZ"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "UninstallString" '"$INSTDIR\Uninstall.exe"'
@@ -191,6 +191,7 @@ Section "YCSZ" SEC_MAIN
   ${EndIf}
   ExecWait '"$INSTDIR\Ycsz.exe" --installed-role' $0
   ${If} $0 == 10
+    CreateShortCut "$DESKTOP\YCSZ 管理端.lnk" "$INSTDIR\Ycsz.exe"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall" "YcszRole" "manager"
     nsExec::ExecToLog '"$SYSDIR\netsh.exe" advfirewall firewall add rule name="YCSZ Manager TLS" dir=in action=allow program="$INSTDIR\Ycsz.exe" protocol=TCP localport=17443 remoteip=LocalSubnet profile=domain,private'
     Pop $0
@@ -213,6 +214,7 @@ Section "YCSZ" SEC_MAIN
   ${If} $0 != 0
     MessageBox MB_ICONEXCLAMATION "安装已完成，但服务启动失败。请查看 ProgramData\YcszFirewall\service.log，或使用管理员恢复步骤。"
   ${EndIf}
+  Exec '"$INSTDIR\Ycsz.exe" --tray'
 SectionEnd
 Function un.onInit
   SetRegView 64
@@ -237,6 +239,7 @@ Section "Uninstall"
   Pop $0
   DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "YcszFirewallTray"
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall"
+  Delete "$DESKTOP\YCSZ 管理端.lnk"
   Delete "$SMPROGRAMS\YCSZ 教育机房防火墙\管理界面.lnk"
   Delete "$SMPROGRAMS\YCSZ 教育机房防火墙\使用说明.lnk"
   RMDir "$SMPROGRAMS\YCSZ 教育机房防火墙"

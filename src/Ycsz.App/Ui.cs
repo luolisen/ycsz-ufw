@@ -38,15 +38,19 @@ namespace Ycsz {
         }
     }
     public sealed class TrayContext : ApplicationContext {
-        readonly NotifyIcon tray; bool opened; readonly Timer timer=new Timer { Interval=15000 };
+        readonly NotifyIcon tray; bool opened; bool refreshing; readonly Timer timer=new Timer { Interval=15000 };
         public TrayContext() {
             tray=new NotifyIcon { Icon=SystemIcons.Shield,Text="YCSZ 机房防护 · SHIFT + 点击管理",Visible=true };
-            tray.MouseClick+=(s,e)=> { if(e.Button==MouseButtons.Left && (Control.ModifierKeys&Keys.Shift)==Keys.Shift && !opened) { opened=true; try { Program.OpenConsole(); } finally { opened=false; } } };
-            timer.Tick+=async(s,e)=> { RefreshProxy(); try { var status=await Task.Run(()=>Ipc.Call(new Packet { Op="status" })); string text="YCSZ · "+status.Status; tray.Text=text.Substring(0,Math.Min(63,text.Length)); } catch { tray.Text="YCSZ · 服务不可用，请联系管理员"; } }; timer.Start();
+            var menu=new ContextMenuStrip(); menu.Items.Add("打开管理界面",null,(s,e)=>OpenManager()); tray.ContextMenuStrip=menu;
+            tray.DoubleClick+=(s,e)=>OpenManager();
+            tray.BalloonTipTitle="YCSZ 机房防护"; tray.BalloonTipText="托盘已启动，双击图标或右键打开管理界面。"; tray.ShowBalloonTip(4000);
+            tray.MouseClick+=(s,e)=> { if(e.Button==MouseButtons.Left && (Control.ModifierKeys&Keys.Shift)==Keys.Shift && !opened) OpenManager(); };
+            timer.Tick+=async(s,e)=> { if(refreshing) return; refreshing=true; RefreshProxy(); try { var status=await Task.Run(()=>Ipc.Call(new Packet { Op="status" })); string text="YCSZ · "+status.Status; tray.Text=text.Substring(0,Math.Min(63,text.Length)); } catch { tray.Text="YCSZ · 服务不可用，请联系管理员"; } finally { refreshing=false; } }; timer.Start();
         }
+        void OpenManager() { if(opened) return; opened=true; try { Program.OpenConsole(); } finally { opened=false; } }
         static void RefreshProxy() { InternetSetOption(IntPtr.Zero,39,IntPtr.Zero,0); InternetSetOption(IntPtr.Zero,37,IntPtr.Zero,0); }
         [DllImport("wininet.dll",SetLastError=true)] static extern bool InternetSetOption(IntPtr internet,int option,IntPtr buffer,int size);
-        protected override void Dispose(bool disposing) { if(disposing) { timer.Dispose(); tray.Visible=false; tray.Dispose(); } base.Dispose(disposing); }
+        protected override void Dispose(bool disposing) { if(disposing) { timer.Dispose(); tray.Visible=false; if(tray.ContextMenuStrip!=null) tray.ContextMenuStrip.Dispose(); tray.Dispose(); } base.Dispose(disposing); }
     }
     public sealed class ConsoleForm : Form {
         readonly string token,role; readonly DataGridView clients=new DataGridView(); readonly ListBox events=new ListBox { Dock=DockStyle.Fill,HorizontalScrollbar=true };

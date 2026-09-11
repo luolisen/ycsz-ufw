@@ -68,7 +68,7 @@ namespace Ycsz {
         [DllImport("advapi32.dll")] static extern bool CloseServiceHandle(IntPtr handle);
         public static Packet Call(Packet request) {
             using (var pipe = new NamedPipeClientStream(".",IpcServer.Name,PipeDirection.InOut,PipeOptions.Asynchronous)) {
-                pipe.Connect(4000);
+                try { pipe.Connect(4000); } catch (TimeoutException) { throw new TimeoutException("无法连接本机防护服务：服务可能正在启动或反复重启，请查看 service.log；这不是密码验证失败。"); }
                 VerifyServiceEndpoint(pipe.SafePipeHandle);
                 using (var deadline = new Timer(x=> { try { pipe.Dispose(); } catch {} },null,15000,Timeout.Infinite)) { Wire.Send(pipe,request); var reply=Wire.Receive(pipe); if (!reply.Ok) throw new InvalidOperationException(reply.Error ?? "操作失败"); return reply; }
             }

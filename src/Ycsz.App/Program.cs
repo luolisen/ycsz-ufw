@@ -21,7 +21,14 @@ namespace Ycsz {
                     using(var prompt=new PasswordDialog("验证管理密码后卸载",null,settings.Password)) if(prompt.ShowDialog()!=DialogResult.OK) return 1;
                     Recovery(); return 0;
                 }
-                if(args.Length>0 && args[0]=="--tray") { Application.Run(new TrayContext()); return 0; }
+                if(args.Length>0 && args[0]=="--tray") {
+                    bool created;
+                    using(var mutex=new System.Threading.Mutex(true,@"Local\YcszFirewall.Tray",out created)) {
+                        if(!created) return 0;
+                        try { Application.Run(new TrayContext()); } finally { mutex.ReleaseMutex(); }
+                    }
+                    return 0;
+                }
                 OpenConsole(); return 0;
             } catch(Exception e) { MessageBox.Show(e.Message,"YCSZ 教育机房防火墙",MessageBoxButtons.OK,MessageBoxIcon.Error); return 1; }
         }
