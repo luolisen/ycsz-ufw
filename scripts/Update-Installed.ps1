@@ -19,7 +19,7 @@ function Stop-InstalledServiceAndCloseUi {
     $current = Get-Service YcszFirewall
     if ($current.Status -ne 'Stopped') {
         try { Stop-Service YcszFirewall -ErrorAction Stop }
-        catch { throw ('服务未能停止。若内核自保护已启用，请先在管理页进入已认证的自保护维护窗口，点击维护停止本机服务，确认服务已停止后再重试更新。原始错误：' + $_.Exception.Message) }
+        catch { throw ('Service did not stop. Authenticate the maintenance window before retrying the update. Original error: ' + $_.Exception.Message) }
     }
     $current = Get-Service YcszFirewall
     $current.WaitForStatus('Stopped',[TimeSpan]::FromSeconds(120))
