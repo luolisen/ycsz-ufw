@@ -12,36 +12,27 @@ DriverVer=09/12/2026,1.0.0.0
 CatalogFile=YcszProtection.cat
 PnpLockdown=1
 
-[DefaultInstall]
+[DefaultInstall.NT$ARCH$]
 OptionDesc=%ServiceDescription%
 CopyFiles=DriverFiles
 
-[DefaultInstall.NTamd64]
-OptionDesc=%ServiceDescription%
-CopyFiles=DriverFiles
-
-[DefaultInstall.Services]
+[DefaultInstall.NT$ARCH$.Services]
 AddService=%ServiceName%,0x00000002,ServiceInstall
 
-[DefaultInstall.NTamd64.Services]
-AddService=%ServiceName%,0x00000002,ServiceInstall
+[DefaultUninstall.NT$ARCH$]
+LegacyUninstall=1
+DelFiles=DriverFiles.Uninstall
 
-[DefaultUninstall]
-DelFiles=DriverFiles
-
-[DefaultUninstall.NTamd64]
-DelFiles=DriverFiles
-
-[DefaultUninstall.Services]
-DelService=%ServiceName%,0x00000200
-
-[DefaultUninstall.NTamd64.Services]
+[DefaultUninstall.NT$ARCH$.Services]
 DelService=%ServiceName%,0x00000200
 
 [DestinationDirs]
 DefaultDestDir=12
 
 [DriverFiles]
+YcszProtection.sys
+
+[DriverFiles.Uninstall]
 YcszProtection.sys
 
 [SourceDisksFiles]
