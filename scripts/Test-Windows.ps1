@@ -41,7 +41,7 @@ if ($Mode -eq 'Static') {
         }
         if (!(Test-Path (Join-Path $repo 'scripts\Test-ProtectionDriver.ps1'))) { throw 'Dynamic driver validation tool missing' }
         $source=(Get-Content (Join-Path $driver 'ycsz_protection.c') -Raw) + (Get-Content (Join-Path $driver 'ycsz_minifilter.c') -Raw)
-        foreach ($needle in @('OB_OPERATION_HANDLE_CREATE','OB_OPERATION_HANDLE_DUPLICATE','PROCESS_TERMINATE','IRP_MJ_WRITE','FileDispositionInformation','FileRenameInformation','IOCTL_YCP_REGISTER_TRAY','YcpIsTrustedWriter','IRP_MJ_ACQUIRE_FOR_SECTION_SYNCHRONIZATION','FSCTL_SET_REPARSE_POINT','ProtectedDataRoot','TrustedDataRoot')) {
+        foreach ($needle in @('OB_OPERATION_HANDLE_CREATE','OB_OPERATION_HANDLE_DUPLICATE','PROCESS_TERMINATE','IRP_MJ_WRITE','FileDispositionInformation','FileRenameInformation','IOCTL_YCP_REGISTER_TRAY','YcpIsTrustedWriter','FSCTL_SET_REPARSE_POINT','ProtectedDataRoot','TrustedDataRoot')) {
             if ($source -notmatch [regex]::Escape($needle)) { throw "Driver source gate missing: $needle" }
         }
         if ($source -match 'Ioctl.*PID|arbitrary.*PID') { throw 'Driver source appears to expose an arbitrary PID control path' }

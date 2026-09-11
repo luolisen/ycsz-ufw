@@ -117,28 +117,6 @@ YcpDestinationIsProtected(
 }
 
 static BOOLEAN
-YcpAcquireRequestsMutation(
-    _In_ PFLT_CALLBACK_DATA Data
-    )
-{
-    ULONG protection;
-
-    if (Data == NULL || Data->Iopb == NULL) return FALSE;
-    if (Data->Iopb->MajorFunction == IRP_MJ_ACQUIRE_FOR_SECTION_SYNCHRONIZATION) {
-        protection = Data->Iopb->Parameters.AcquireForSectionSynchronization.PageProtection;
-        return (protection & (PAGE_READWRITE | PAGE_WRITECOPY |
-                              PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
-    }
-#ifdef IRP_MJ_ACQUIRE_FOR_MOD_WRITE
-    if (Data->Iopb->MajorFunction == IRP_MJ_ACQUIRE_FOR_MOD_WRITE) return TRUE;
-#endif
-#ifdef IRP_MJ_ACQUIRE_FOR_CC_FLUSH
-    if (Data->Iopb->MajorFunction == IRP_MJ_ACQUIRE_FOR_CC_FLUSH) return TRUE;
-#endif
-    return FALSE;
-}
-
-static BOOLEAN
 YcpFileSystemControlRequestsMutation(
     _In_ PFLT_CALLBACK_DATA Data
     )
@@ -176,7 +154,6 @@ YcpPreOperationFile(
     BOOLEAN sourceResolved = FALSE;
     BOOLEAN destinationResolved = TRUE;
     BOOLEAN mutation = FALSE;
-    BOOLEAN reparseMutation = FALSE;
 
     UNREFERENCED_PARAMETER(CompletionContext);
 
@@ -190,6 +167,9 @@ YcpPreOperationFile(
         break;
 
     case IRP_MJ_WRITE:
+        // Cache-manager paging writes cannot be attributed to the original
+        // authorized writer. Denying them risks corrupting legitimate data.
+        if ((Data->Iopb->IrpFlags & IRP_PAGING_IO) != 0) return FLT_PREOP_SUCCESS_NO_CALLBACK;
         mutation = TRUE;
         break;
 
@@ -202,15 +182,13 @@ YcpPreOperationFile(
 
     case IRP_MJ_FILE_SYSTEM_CONTROL:
         mutation = YcpFileSystemControlRequestsMutation(Data);
-        reparseMutation = mutation;
         break;
 
     default:
-        mutation = YcpAcquireRequestsMutation(Data);
+        mutation = FALSE;
         break;
     }
     if (!mutation) return FLT_PREOP_SUCCESS_NO_CALLBACK;
-    if (reparseMutation && !YcpIsTrustedWriter(Data)) return YcpDenyMutation(Data);
 
     status = FltGetFileNameInformation(
         Data,
@@ -237,7 +215,10 @@ YcpPreOperationFile(
     }
 
     if (YcpIsTrustedWriter(Data)) return FLT_PREOP_SUCCESS_NO_CALLBACK;
-    if (!sourceResolved || !destinationResolved || sourceProtected || destinationProtected) {
+    // Never deny unrelated or unresolved filesystem operations globally.
+    // Unresolved aliases require file/stream identity tracking before they can
+    // safely be protected; a missing name is not proof of product ownership.
+    if ((sourceResolved && sourceProtected) || (destinationResolved && destinationProtected)) {
         return YcpDenyMutation(Data);
     }
     return FLT_PREOP_SUCCESS_NO_CALLBACK;
@@ -256,13 +237,6 @@ static const FLT_OPERATION_REGISTRATION g_YcpFilterOperations[] = {
     { IRP_MJ_WRITE, 0, YcpPreOperationFile, NULL },
     { IRP_MJ_SET_INFORMATION, 0, YcpPreOperationFile, NULL },
     { IRP_MJ_FILE_SYSTEM_CONTROL, 0, YcpPreOperationFile, NULL },
-    { IRP_MJ_ACQUIRE_FOR_SECTION_SYNCHRONIZATION, 0, YcpPreOperationFile, NULL },
-#ifdef IRP_MJ_ACQUIRE_FOR_MOD_WRITE
-    { IRP_MJ_ACQUIRE_FOR_MOD_WRITE, 0, YcpPreOperationFile, NULL },
-#endif
-#ifdef IRP_MJ_ACQUIRE_FOR_CC_FLUSH
-    { IRP_MJ_ACQUIRE_FOR_CC_FLUSH, 0, YcpPreOperationFile, NULL },
-#endif
     { IRP_MJ_OPERATION_END }
 };
 

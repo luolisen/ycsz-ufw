@@ -55,7 +55,6 @@ function Invoke-StaticChecks {
         @('trusted data root registry', $kernel, 'TrustedDataRoot'),
         @('real tray process validation', $kernel, 'PsLookupProcessByProcessId'),
         @('trusted writer gate', $kernel, 'YcpIsTrustedWriter'),
-        @('mapping gate', $filter, 'IRP_MJ_ACQUIRE_FOR_SECTION_SYNCHRONIZATION'),
         @('reparse gate', $filter, 'FSCTL_SET_REPARSE_POINT'),
         @('v2 user ABI', $transport, 'StateDataRoot'),
         @('actual activation probe', $app, '--protection-status'),
@@ -66,6 +65,7 @@ function Invoke-StaticChecks {
         if (Test-Contains $check[1] $check[2]) { Add-Result $check[0] 'PASS' $check[2] }
         else { Add-Result $check[0] 'FAIL' "missing $($check[2])" }
     }
+    Add-Result 'preexisting writable mappings' 'BLOCKED' 'Requires stream identity and safe cache-write handling; unsupported FSFilter denial removed.'
     Add-Result 'dynamic driver load' 'BLOCKED' 'Static mode does not load the unsigned driver.'
     Add-Result 'signed CAT and unique altitude' 'BLOCKED' 'Requires an isolated Windows target with production signing and an assigned altitude.'
     Add-Result 'termination/mapping/link runtime evidence' 'BLOCKED' 'Static mode records the required dynamic matrix but does not claim runtime blocking.'
