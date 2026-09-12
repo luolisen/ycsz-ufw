@@ -1,41 +1,44 @@
 #include "ycsz_initialization_coverage.h"
-#include <stddef.h>
+
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
 
 static void
 YcpCoverageIncrement(
-    uint32_t *Value
+    YCP_UINT32 *Value
     )
 {
-    if (*Value != UINT32_MAX) {
+    if (*Value != YCP_UINT32_MAX) {
         ++*Value;
     }
 }
 
-static uint32_t
+static YCP_UINT32
 YcpCoverageHash(
-    uint64_t VolumeSerialNumber,
-    int64_t FileIndex
+    YCP_UINT64 VolumeSerialNumber,
+    YCP_INT64 FileIndex
     )
 {
-    uint64_t value = VolumeSerialNumber ^ (uint64_t)FileIndex;
+    YCP_UINT64 value = VolumeSerialNumber ^ (YCP_UINT64)FileIndex;
     value ^= value >> 33;
-    value *= UINT64_C(0xff51afd7ed558ccd);
+    value *= YCP_UINT64_C(0xff51afd7ed558ccd);
     value ^= value >> 33;
-    value *= UINT64_C(0xc4ceb9fe1a85ec53);
+    value *= YCP_UINT64_C(0xc4ceb9fe1a85ec53);
     value ^= value >> 33;
-    return (uint32_t)(value ^ (value >> 32));
+    return (YCP_UINT32)(value ^ (value >> 32));
 }
 
 static PYCP_INITIALIZATION_COVERAGE_SLOT
 YcpCoverageFind(
     PYCP_INITIALIZATION_COVERAGE Coverage,
-    uint64_t VolumeSerialNumber,
-    int64_t FileIndex,
+    YCP_UINT64 VolumeSerialNumber,
+    YCP_INT64 FileIndex,
     int *Found
     )
 {
-    uint32_t index;
-    uint32_t probe;
+    YCP_UINT32 index;
+    YCP_UINT32 probe;
 
     *Found = 0;
     if (Coverage == NULL || Coverage->Slots == NULL || Coverage->SlotCount == 0 ||
@@ -63,11 +66,11 @@ int
 YcpInitializationCoverageInitialize(
     PYCP_INITIALIZATION_COVERAGE Coverage,
     PYCP_INITIALIZATION_COVERAGE_SLOT Slots,
-    uint32_t SlotCount,
-    uint32_t MaximumEntries
+    YCP_UINT32 SlotCount,
+    YCP_UINT32 MaximumEntries
     )
 {
-    uint32_t index;
+    YCP_UINT32 index;
 
     if (Coverage == NULL || Slots == NULL || SlotCount < 2u ||
         (SlotCount & (SlotCount - 1u)) != 0 || MaximumEntries == 0 ||
@@ -94,9 +97,9 @@ YcpInitializationCoverageInitialize(
 int
 YcpInitializationCoverageDeclare(
     PYCP_INITIALIZATION_COVERAGE Coverage,
-    uint64_t VolumeSerialNumber,
-    int64_t FileIndex,
-    uint32_t Flags
+    YCP_UINT64 VolumeSerialNumber,
+    YCP_INT64 FileIndex,
+    YCP_UINT32 Flags
     )
 {
     int found;
@@ -124,9 +127,9 @@ YcpInitializationCoverageDeclare(
 int
 YcpInitializationCoverageObserve(
     PYCP_INITIALIZATION_COVERAGE Coverage,
-    uint64_t VolumeSerialNumber,
-    int64_t FileIndex,
-    uint32_t Flags,
+    YCP_UINT64 VolumeSerialNumber,
+    YCP_INT64 FileIndex,
+    YCP_UINT32 Flags,
     int Marked
     )
 {
@@ -163,7 +166,7 @@ YcpInitializationCoverageObserve(
 int
 YcpInitializationCoverageCanCommit(
     const YCP_INITIALIZATION_COVERAGE *Coverage,
-    uint32_t ExpectedEntries
+    YCP_UINT32 ExpectedEntries
     )
 {
     return Coverage != NULL && ExpectedEntries != 0 &&

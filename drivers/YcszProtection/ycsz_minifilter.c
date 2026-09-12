@@ -192,7 +192,7 @@ YcpAttachProtectedStreamContext(
 static BOOLEAN
 YcpMarkProtectedStream(
     _In_ PCFLT_RELATED_OBJECTS FltObjects,
-    _Out_ PYCP_INITIALIZATION_FILE_IDENTITY Identity
+    _Out_ YCP_INITIALIZATION_FILE_IDENTITY *Identity
     )
 {
     FILE_INTERNAL_INFORMATION fileInformation;
