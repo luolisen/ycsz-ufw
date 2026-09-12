@@ -191,17 +191,31 @@ foreach ($needle in @(
     'FixtureManifestPath',
     'New-ProtectionFixtureScope',
     'Get-ProtectionFixtureHandleEntity',
+    'Test-ProtectionFixtureOwnedEntity',
     'New-ProtectionFixtureHardLink',
     'New-DynamicJunctionOwned',
     'Invoke-DynamicOwnedCleanup',
     'Win32_Service',
     'TrustedImagePath',
-    'TrustedDataRoot'
+    'TrustedDataRoot',
+    'TwoPhase',
+    'Require-TwoPhaseFixturePreconditions',
+    'New-TwoPhaseHeldMapping',
+    'pre-active handle held',
+    'ActivationSignalPath',
+    'WaitTimeoutSeconds',
+    'Invoke-TwoPhaseChecks',
+    'SetFileInformationByHandle'
 )) {
     if ($dynamic -notmatch [regex]::Escape($needle)) { throw "Dynamic evidence regression guard missing: $needle" }
 }
 foreach ($needle in @(
     'GetFileInformationByHandle',
+    'SetFileInformationByHandle',
+    'FileDispositionInfo',
+    '0x00010080',
+    'fileInformationClass',
+    'MoveFileEx',
     '0x02000000 -bor 0x00200000',
     'CreateHardLink',
     'CreateNew',
@@ -213,5 +227,7 @@ if ($dynamic -match 'MapViewOfFile\([^\r\n]*0x0002\s*-bor\s*0x0020') { throw 'Wr
 if ($dynamic -match 'catch\s*\{\s*Add-Result[^\r\n]*\x27PASS\x27') { throw 'Dynamic exception catch still unconditionally records PASS.' }
 if ($dynamic -match 'WriteAllText') { throw 'Dynamic fixture controls still overwrite files with WriteAllText.' }
 if ($dynamic -match 'Remove-Item[^\r\n]*-Recurse') { throw 'Dynamic cleanup still recursively deletes an unknown path.' }
+if ($shared -match 'Remove-Item|RemoveDirectory\(') { throw 'Fixture cleanup still contains a path-based deletion fallback.' }
+if ($shared -notmatch 'SetFileInformationByHandle') { throw 'Fixture cleanup does not use handle-bound file disposition.' }
 $count += 2
 Write-Output "PASS $count pure protection install/remove and dynamic evidence classification checks; no service, driver or system configuration changed."

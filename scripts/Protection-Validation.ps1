@@ -28,6 +28,10 @@ public static class YcszFixtureBoundaryNative {
         public uint FileIndexHigh;
         public uint FileIndexLow;
     }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct FileDispositionInfo {
+        public byte DeleteFile;
+    }
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
     public static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
     [DllImport("kernel32.dll", SetLastError=true)]
@@ -35,9 +39,11 @@ public static class YcszFixtureBoundaryNative {
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
     public static extern bool CreateDirectory(string path, IntPtr security);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-    public static extern bool RemoveDirectory(string path);
-    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
     public static extern bool CreateHardLink(string link, string existing, IntPtr security);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern bool MoveFileEx(string existing, string replacement, uint flags);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool SetFileInformationByHandle(SafeFileHandle file, int fileInformationClass, ref FileDispositionInfo info, uint size);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
     public static extern uint QueryDosDevice(string device, StringBuilder target, uint max);
 }
@@ -116,6 +122,16 @@ function Close-ProtectionFixtureEntity($Entity) {
     }
 }
 
+function New-ProtectionFixtureOwnedRecord([string]$Path,[string]$Kind,$Entity) {
+    if ($null -eq $Entity) { throw "Cannot record an owned fixture without an entity: $Path" }
+    $record = [ordered]@{
+        Path=[IO.Path]::GetFullPath($Path); Kind=$Kind; VolumeSerial=$Entity.VolumeSerial; FileIndex=$Entity.FileIndex
+        Attributes=$Entity.Attributes; NumberOfLinks=$Entity.NumberOfLinks
+    }
+    if ($Entity.PSObject.Properties.Name -contains 'Length') { $record.Length=$Entity.Length }
+    return [pscustomobject]$record
+}
+
 function Assert-ProtectionFixtureEntity($Entity,[switch]$AllowMultipleLinks) {
     if ($null -eq $Entity) { throw 'Fixture entity is missing.' }
     if (($Entity.Attributes -band 0x400) -ne 0) { throw "Fixture entity is a reparse point: $($Entity.Path)" }
@@ -123,6 +139,27 @@ function Assert-ProtectionFixtureEntity($Entity,[switch]$AllowMultipleLinks) {
         throw "Fixture file has unexpected hard-link count $($Entity.NumberOfLinks): $($Entity.Path)"
     }
     return $Entity
+}
+
+function Test-ProtectionFixtureOwnedEntity($Owned,$Entity) {
+    if ($null -eq $Owned -or $null -eq $Entity) {
+        return [pscustomobject]@{ Matches=$false; Detail='Owned fixture or handle entity is missing.' }
+    }
+    $isReparse = ($Entity.Attributes -band 0x400) -ne 0
+    $kindMatches = switch ([string]$Owned.Kind) {
+        'Directory' { $Entity.IsDirectory -and !$isReparse; break }
+        'Junction' { $Entity.IsDirectory -and $isReparse; break }
+        'File' { !$Entity.IsDirectory -and !$isReparse -and $Entity.NumberOfLinks -eq 1; break }
+        'HardLink' { !$Entity.IsDirectory -and !$isReparse; break }
+        default { $false; break }
+    }
+    if (!$kindMatches) {
+        return [pscustomobject]@{ Matches=$false; Detail=('Owned fixture type changed or is unsupported: ' + $Owned.Path) }
+    }
+    if ($Entity.VolumeSerial -ne [uint64]$Owned.VolumeSerial -or $Entity.FileIndex -ne [uint64]$Owned.FileIndex) {
+        return [pscustomobject]@{ Matches=$false; Detail='Owned path identity changed; evidence path is retained.' }
+    }
+    return [pscustomobject]@{ Matches=$true; Detail='Owned path identity matches the entity opened for the operation.' }
 }
 
 function New-ProtectionFixtureScope([string]$FixtureRoot,[string[]]$RequiredPaths,[string[]]$AllowMissingLeafPaths,[string[]]$ReadOnlyPaths) {
@@ -243,12 +280,17 @@ function New-ProtectionFixtureDirectory([string]$Path) {
     if (!$created) { throw (Get-ProtectionFixtureWin32Exception $error ("Fixture directory was not created: " + $full)) }
     $entity=$null
     try {
-        $entity=Assert-ProtectionFixtureEntity (Get-ProtectionFixtureEntity $full)
+        $entity=Get-ProtectionFixtureEntity $full
+        Assert-ProtectionFixtureEntity $entity | Out-Null
         if (!$entity.IsDirectory) { throw "Created fixture path is not a directory: $full" }
-        return [pscustomobject]@{ Path=$full; Kind='Directory'; VolumeSerial=$entity.VolumeSerial; FileIndex=$entity.FileIndex; Attributes=$entity.Attributes; NumberOfLinks=$entity.NumberOfLinks }
+        return New-ProtectionFixtureOwnedRecord $full 'Directory' $entity
     } catch {
-        if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity; $entity=$null }
-        try { Add-ProtectionFixtureNativeType; [void]([YcszFixtureBoundaryNative]::RemoveDirectory($full)) } catch { }
+        if ($null -ne $entity -and $entity.IsDirectory -and (($entity.Attributes -band 0x400) -eq 0)) {
+            $owned=New-ProtectionFixtureOwnedRecord $full 'Directory' $entity
+            Close-ProtectionFixtureEntity $entity; $entity=$null
+            $decision=Remove-ProtectionFixtureOwnedPath $owned
+            if ($decision.Status -ne 'PASS') { throw ("Created directory validation failed and safe handle cleanup was not confirmed: " + $decision.Detail) }
+        }
         throw
     }
     finally { if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity } }
@@ -257,24 +299,41 @@ function New-ProtectionFixtureDirectory([string]$Path) {
 function New-ProtectionFixtureFile([string]$Path,[byte[]]$Bytes) {
     $full=[IO.Path]::GetFullPath($Path)
     $stream=$null
-    $created=$false
+    $createdOwned=$null
+    $failure=$null
     try {
         $stream=New-Object IO.FileStream($full,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
-        $created=$true
+        $createdEntity=Get-ProtectionFixtureHandleEntity $stream.SafeFileHandle $full
+        if (!$createdEntity.IsDirectory -and (($createdEntity.Attributes -band 0x400) -eq 0)) {
+            $createdOwned=New-ProtectionFixtureOwnedRecord $full 'File' $createdEntity
+        } else {
+            throw "Created fixture path is not a regular file: $full"
+        }
         if ($null -ne $Bytes -and $Bytes.Length -gt 0) { $stream.Write($Bytes,0,$Bytes.Length); $stream.Flush($true) }
     } catch {
-        if ($null -ne $stream) { try { $stream.Dispose() } catch { } }
-        if ($created) { try { Remove-Item -LiteralPath $full -Force -ErrorAction Stop } catch { } }
-        throw
-    } finally { if ($null -ne $stream) { try { $stream.Dispose() } catch { } } }
+        $failure=$_
+    } finally {
+        if ($null -ne $stream) { try { $stream.Dispose() } catch { if ($null -eq $failure) { $failure=$_ } } }
+    }
+    if ($null -ne $failure) {
+        if ($null -ne $createdOwned) {
+            $decision=Remove-ProtectionFixtureOwnedPath $createdOwned
+            if ($decision.Status -ne 'PASS') { throw ("Fixture file creation failed and safe handle cleanup was not confirmed: " + $decision.Detail) }
+        }
+        throw $failure
+    }
     $entity=$null
     try {
-        $entity=Assert-ProtectionFixtureEntity (Get-ProtectionFixtureEntity $full)
+        $entity=Get-ProtectionFixtureEntity $full
+        Assert-ProtectionFixtureEntity $entity | Out-Null
         if ($entity.IsDirectory) { throw "Created fixture path is a directory: $full" }
-        return [pscustomobject]@{ Path=$full; Kind='File'; VolumeSerial=$entity.VolumeSerial; FileIndex=$entity.FileIndex; Attributes=$entity.Attributes; NumberOfLinks=$entity.NumberOfLinks; Length=$entity.Length }
+        return New-ProtectionFixtureOwnedRecord $full 'File' $entity
     } catch {
         if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity; $entity=$null }
-        try { Remove-Item -LiteralPath $full -Force -ErrorAction Stop } catch { }
+        if ($null -ne $createdOwned) {
+            $decision=Remove-ProtectionFixtureOwnedPath $createdOwned
+            if ($decision.Status -ne 'PASS') { throw ("Fixture file validation failed and safe handle cleanup was not confirmed: " + $decision.Detail) }
+        }
         throw
     } finally { if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity } }
 }
@@ -287,17 +346,23 @@ function New-ProtectionFixtureHardLink([string]$Path,[string]$Target) {
     if (!$created) { throw (Get-ProtectionFixtureWin32Exception $error ("Fixture hard link was not created: " + $full)) }
     $entity=$null
     try {
-        $entity=Assert-ProtectionFixtureEntity (Get-ProtectionFixtureEntity $full) -AllowMultipleLinks
+        $entity=Get-ProtectionFixtureEntity $full
+        Assert-ProtectionFixtureEntity $entity -AllowMultipleLinks | Out-Null
         if ($entity.IsDirectory -or $entity.NumberOfLinks -lt 2) { throw "Fixture hard link identity was not confirmed: $full" }
-        return [pscustomobject]@{ Path=$full; Kind='HardLink'; VolumeSerial=$entity.VolumeSerial; FileIndex=$entity.FileIndex; Attributes=$entity.Attributes; NumberOfLinks=$entity.NumberOfLinks; Length=$entity.Length }
+        return New-ProtectionFixtureOwnedRecord $full 'HardLink' $entity
     } catch {
-        if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity; $entity=$null }
-        try { Remove-Item -LiteralPath $full -Force -ErrorAction Stop } catch { }
+        if ($null -ne $entity -and !$entity.IsDirectory -and (($entity.Attributes -band 0x400) -eq 0)) {
+            $owned=New-ProtectionFixtureOwnedRecord $full 'HardLink' $entity
+            Close-ProtectionFixtureEntity $entity; $entity=$null
+            $decision=Remove-ProtectionFixtureOwnedPath $owned
+            if ($decision.Status -ne 'PASS') { throw ("Fixture hard-link validation failed and safe handle cleanup was not confirmed: " + $decision.Detail) }
+        }
         throw
     } finally { if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity } }
 }
 
 function Test-ProtectionFixtureOwnedIdentity($Owned) {
+    $entity=$null
     try { $entity=Get-ProtectionFixtureEntity $Owned.Path }
     catch {
         $code=Get-ProtectionNativeErrorCode $_
@@ -305,36 +370,87 @@ function Test-ProtectionFixtureOwnedIdentity($Owned) {
         return [pscustomobject]@{ Status='ERROR'; Exists=$true; Detail=('Could not re-open owned path; identity was not confirmed: ' + $_.Exception.Message) }
     }
     try {
-        $kindMatches=if ($Owned.Kind -eq 'Directory') { $entity.IsDirectory -and (($entity.Attributes -band 0x400) -eq 0) } elseif ($Owned.Kind -eq 'Junction') { $entity.IsDirectory -and (($entity.Attributes -band 0x400) -ne 0) } else { !$entity.IsDirectory -and (($entity.Attributes -band 0x400) -eq 0) }
-        $identityMatches=$kindMatches -and $entity.VolumeSerial -eq $Owned.VolumeSerial -and $entity.FileIndex -eq $Owned.FileIndex
-        if ($Owned.Kind -eq 'File' -and $entity.NumberOfLinks -ne 1) { $identityMatches=$false }
-        if (!$identityMatches) { return [pscustomobject]@{ Status='ERROR'; Exists=$true; Detail='Owned path identity changed; evidence path is retained.' } }
-        return [pscustomobject]@{ Status='PASS'; Exists=$true; Entity=$entity; Detail='Owned path identity matches.' }
+        $match=Test-ProtectionFixtureOwnedEntity $Owned $entity
+        if (!$match.Matches) { return [pscustomobject]@{ Status='ERROR'; Exists=$true; Detail=$match.Detail } }
+        return [pscustomobject]@{ Status='PASS'; Exists=$true; Entity=$entity; Detail=$match.Detail }
     } finally { if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity } }
 }
 
-function Remove-ProtectionFixtureOwnedPath($Owned) {
-    $check=Test-ProtectionFixtureOwnedIdentity $Owned
-    if ($check.Status -ne 'PASS') { return $check }
-    if (!$check.Exists) { return [pscustomobject]@{ Status='PASS'; Exists=$false; Detail='Owned path was already absent.' } }
-    try {
-        if ($Owned.Kind -eq 'Directory' -and @([IO.Directory]::GetFileSystemEntries($Owned.Path)).Count -ne 0) {
-            return [pscustomobject]@{ Status='ERROR'; Exists=$true; Detail='Owned directory is not empty; evidence path is retained.' }
-        }
-        if ($Owned.Kind -eq 'Directory' -or $Owned.Kind -eq 'Junction') {
-            Add-ProtectionFixtureNativeType
-            $removed=[YcszFixtureBoundaryNative]::RemoveDirectory($Owned.Path)
-            $error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
-            if (!$removed) { throw (Get-ProtectionFixtureWin32Exception $error ('Native directory cleanup failed: ' + $Owned.Path)) }
-        } else {
-            Remove-Item -LiteralPath $Owned.Path -Force -ErrorAction Stop
-        }
-        $after=Test-ProtectionFixtureOwnedIdentity $Owned
-        if ($after.Exists) { return [pscustomobject]@{ Status='ERROR'; Exists=$true; Detail='Owned path remained after cleanup; evidence path is retained.' } }
-        return [pscustomobject]@{ Status='PASS'; Exists=$false; Detail='Owned path was removed.' }
-    } catch {
-        return [pscustomobject]@{ Status='ERROR'; Exists=$true; Detail=('Cleanup failed for ' + $Owned.Path + '; evidence path is retained: ' + $_.Exception.Message) }
+function Set-ProtectionFixtureDeleteDisposition($Handle,[string]$Path) {
+    Add-ProtectionFixtureNativeType
+    $disposition=New-Object YcszFixtureBoundaryNative+FileDispositionInfo
+    $disposition.DeleteFile=[byte]1
+    $set=[YcszFixtureBoundaryNative]::SetFileInformationByHandle($Handle,4,[ref]$disposition,[uint32]1)
+    $error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    if (!$set) { throw (Get-ProtectionFixtureWin32Exception $error ('Handle-bound cleanup disposition failed: ' + $Path)) }
+    return $true
+}
+
+function Get-ProtectionFixtureOwnedPathObservation($Owned) {
+    $entity=$null
+    try { $entity=Get-ProtectionFixtureEntity $Owned.Path }
+    catch {
+        $code=Get-ProtectionNativeErrorCode $_
+        if ($code -eq 2 -or $code -eq 3) { return [pscustomobject]@{ Status='PASS'; Exists=$false; Matches=$false; Detail='Owned path is absent after handle-bound cleanup.' } }
+        return [pscustomobject]@{ Status='ERROR'; Exists=$true; Matches=$false; Detail=('Could not observe the path after handle-bound cleanup: ' + $_.Exception.Message) }
     }
+    try {
+        $match=Test-ProtectionFixtureOwnedEntity $Owned $entity
+        if ($match.Matches) { return [pscustomobject]@{ Status='PASS'; Exists=$true; Matches=$true; Detail=$match.Detail } }
+        return [pscustomobject]@{ Status='REPLACED'; Exists=$true; Matches=$false; Detail='The original handle was dispositioned and the path now names a different entity; replacement was retained.' }
+    } finally { if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity } }
+}
+
+function Remove-ProtectionFixtureOwnedPath($Owned,[scriptblock]$BeforeDelete,[switch]$AllowDeleteShare) {
+    if ($null -eq $Owned -or [string]::IsNullOrWhiteSpace([string]$Owned.Path)) {
+        return [pscustomobject]@{ Status='ERROR'; Exists=$true; Detail='Owned cleanup requires an explicit path and identity record.' }
+    }
+    Add-ProtectionFixtureNativeType
+    $full=[IO.Path]::GetFullPath([string]$Owned.Path)
+    $share=if ($AllowDeleteShare) { [uint32]7 } else { [uint32]3 }
+    $handle=$null
+    $openedEntity=$null
+    $missing=$false
+    $failure=$null
+    $marked=$false
+    try {
+        $handle=[YcszFixtureBoundaryNative]::CreateFile($full,[uint32]0x00010080,$share,[IntPtr]::Zero,[uint32]3,[uint32](0x02000000 -bor 0x00200000),[IntPtr]::Zero)
+        $openError=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        if ($null -eq $handle -or $handle.IsInvalid) {
+            if ($null -ne $handle) { $handle.Dispose(); $handle=$null }
+            if ($openError -eq 2 -or $openError -eq 3) { $missing=$true }
+            else { $failure=Get-ProtectionFixtureWin32Exception $openError ('Could not open owned path for handle-bound cleanup: ' + $full) }
+        } else {
+            $openedEntity=Get-ProtectionFixtureHandleEntity $handle $full
+            $match=Test-ProtectionFixtureOwnedEntity $Owned $openedEntity
+            if (!$match.Matches) {
+                $failure=New-Object System.InvalidOperationException($match.Detail)
+            } elseif ($null -ne $BeforeDelete) {
+                try { $null=$BeforeDelete.Invoke($handle,$openedEntity) }
+                catch { $failure=New-Object System.InvalidOperationException(('Controlled replacement hook failed before handle-bound cleanup: ' + $_.Exception.Message)) }
+            }
+            if ($null -eq $failure) {
+                try { [void](Set-ProtectionFixtureDeleteDisposition $handle $full); $marked=$true }
+                catch { $failure=$_ }
+            }
+        }
+    } catch { $failure=$_ }
+    finally {
+        if ($null -ne $handle) {
+            try { $handle.Dispose() } catch { if ($null -eq $failure) { $failure=$_ } }
+        }
+    }
+    if ($missing) { return [pscustomobject]@{ Status='PASS'; Exists=$false; Detail='Owned path was already absent.' } }
+    if ($null -ne $failure) {
+        $detail=if ($failure -is [System.Management.Automation.ErrorRecord]) { $failure.Exception.Message } elseif ($failure -is [System.Exception]) { $failure.Message } else { [string]$failure }
+        return [pscustomobject]@{ Status='ERROR'; Exists=$true; Detail=('Handle-bound cleanup failed for ' + $full + '; evidence path is retained: ' + $detail) }
+    }
+    if (!$marked) { return [pscustomobject]@{ Status='ERROR'; Exists=$true; Detail=('Handle-bound cleanup did not mark the owned entity: ' + $full) } }
+    $after=Get-ProtectionFixtureOwnedPathObservation $Owned
+    if ($after.Status -eq 'ERROR') { return [pscustomobject]@{ Status='ERROR'; Exists=$after.Exists; Detail=$after.Detail } }
+    if ($after.Matches) { return [pscustomobject]@{ Status='ERROR'; Exists=$true; Detail='Handle-bound cleanup was marked but the same owned entity remained; evidence path is retained.' } }
+    if ($after.Exists) { return [pscustomobject]@{ Status='PASS'; Exists=$true; ReplacementDetected=$true; Detail=$after.Detail } }
+    return [pscustomobject]@{ Status='PASS'; Exists=$false; Detail='Owned entity was removed by disposition on its verified handle.' }
 }
 
 function Assert-ProtectionServiceCommand([string]$Command,[string]$Image) {
@@ -506,6 +622,7 @@ function Get-ProtectionWin32ErrorLabel([int]$Code) {
         2 { return "ERROR_FILE_NOT_FOUND ($Code/$hex)" }
         5 { return "ERROR_ACCESS_DENIED ($Code/$hex)" }
         32 { return "ERROR_SHARING_VIOLATION ($Code/$hex)" }
+        145 { return "ERROR_DIR_NOT_EMPTY ($Code/$hex)" }
         50 { return "ERROR_NOT_SUPPORTED ($Code/$hex)" }
         87 { return "ERROR_INVALID_PARAMETER ($Code/$hex)" }
         120 { return "ERROR_CALL_NOT_IMPLEMENTED ($Code/$hex)" }

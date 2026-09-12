@@ -41,13 +41,14 @@ function New-TestJunction([string]$Path,[string]$Target) {
     try {
         $entity = Get-ProtectionFixtureEntity $full
         if (!$entity.IsDirectory -or ($entity.Attributes -band 0x400) -eq 0) { throw "Junction identity was not confirmed: $full" }
-        return [pscustomobject]@{
-            Path=$full; Kind='Junction'; VolumeSerial=$entity.VolumeSerial; FileIndex=$entity.FileIndex
-            Attributes=$entity.Attributes; NumberOfLinks=$entity.NumberOfLinks
-        }
+        return New-ProtectionFixtureOwnedRecord $full 'Junction' $entity
     } catch {
-        if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity; $entity=$null }
-        try { Add-ProtectionFixtureNativeType; [void]([YcszFixtureBoundaryNative]::RemoveDirectory($full)) } catch { }
+        if ($null -ne $entity -and $entity.IsDirectory -and (($entity.Attributes -band 0x400) -ne 0)) {
+            $owned=New-ProtectionFixtureOwnedRecord $full 'Junction' $entity
+            Close-ProtectionFixtureEntity $entity; $entity=$null
+            $decision=Remove-ProtectionFixtureOwnedPath $owned
+            if ($decision.Status -ne 'PASS') { throw ("Junction validation failed and safe handle cleanup was not confirmed: " + $decision.Detail) }
+        }
         throw
     } finally {
         if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity }
@@ -89,11 +90,16 @@ try {
     $redirectedFixturePath = Join-Path $parentJunctionPath 'fixture'
     $hardLinkPath = Join-Path $runRoot 'outside-sentinel-link.bin'
     $lockedPath = Join-Path $runRoot 'locked-owned.bin'
+    $racePath = Join-Path $runRoot 'identity-race.bin'
+    $raceReplacementSourcePath = Join-Path $runRoot 'identity-race-replacement-source.bin'
+    $nonEmptyDirectoryPath = Join-Path $runRoot 'non-empty-directory'
+    $nonEmptyChildPath = Join-Path $nonEmptyDirectoryPath 'child.bin'
 
     foreach ($directory in @($protectedRoot,$dataRoot)) {
         $owned = New-ProtectionFixtureDirectory $directory
         [void]$fixtureOwned.Add($owned)
     }
+    $sameFileOwned = $null
     foreach ($file in @(
         [pscustomobject]@{ Path=$imagePath; Bytes=[Text.Encoding]::UTF8.GetBytes('fixture image placeholder') },
         [pscustomobject]@{ Path=$samplePath; Bytes=[Text.Encoding]::UTF8.GetBytes('protected sample bytes') },
@@ -101,7 +107,11 @@ try {
         [pscustomobject]@{ Path=$sentinelPath; Bytes=[Text.Encoding]::UTF8.GetBytes('outside sentinel must remain unchanged') }
     )) {
         $owned = New-ProtectionFixtureFile $file.Path $file.Bytes
-        if ($file.Path -eq $sentinelPath) { [void]$externalOwned.Add($owned) } else { [void]$fixtureOwned.Add($owned) }
+        if ($file.Path -eq $sentinelPath) { [void]$externalOwned.Add($owned) }
+        else {
+            [void]$fixtureOwned.Add($owned)
+            if ($file.Path -eq $sameFilePath) { $sameFileOwned=$owned }
+        }
     }
     $existingFileFingerprint = Get-ByteFingerprint $sameFilePath
     $sentinelFingerprint = Get-ByteFingerprint $sentinelPath
@@ -113,6 +123,11 @@ try {
     Must-Reject 'parent junction entity scope' { New-ProtectionFixtureScope $runRoot @($redirectedFixturePath) @() @() }
     if ((Get-ByteFingerprint $sentinelPath) -ne $sentinelFingerprint) { throw 'Parent junction scope changed the outside sentinel.' }
     Add-Pass 'parent junction outside sentinel preservation'
+    $junctionDecision=Remove-ProtectionFixtureOwnedPath $parentJunctionOwned
+    if ($junctionDecision.Status -ne 'PASS' -or (Test-Path -LiteralPath $parentJunctionPath)) { throw ('Owned junction was not removed by its verified handle: ' + $junctionDecision.Detail) }
+    [void]$fixtureOwned.Remove($parentJunctionOwned)
+    if ((Get-ByteFingerprint $sentinelPath) -ne $sentinelFingerprint) { throw 'Removing the owned junction changed its external target.' }
+    Add-Pass 'owned junction handle-bound cleanup preserves target'
 
     Must-Reject 'existing same-name file CreateNew' { New-ProtectionFixtureFile $sameFilePath ([Text.Encoding]::UTF8.GetBytes('overwrite attempt')) }
     if ((Get-ByteFingerprint $sameFilePath) -ne $existingFileFingerprint) { throw 'CreateNew changed the existing same-name file.' }
@@ -133,6 +148,11 @@ try {
     Must-Reject 'hard-link scope rejection' { New-ProtectionFixtureScope $runRoot @($hardLinkPath) @() @() }
     if ((Get-ByteFingerprint $sentinelPath) -ne $sentinelFingerprint) { throw 'Hard-link checks changed the outside sentinel.' }
     Add-Pass 'hard-link outside sentinel preservation'
+    $hardLinkDecision=Remove-ProtectionFixtureOwnedPath $hardLinkOwned
+    if ($hardLinkDecision.Status -ne 'PASS' -or (Test-Path -LiteralPath $hardLinkPath)) { throw ('Owned hard link was not removed by its verified handle: ' + $hardLinkDecision.Detail) }
+    [void]$fixtureOwned.Remove($hardLinkOwned)
+    if ((Get-ByteFingerprint $sentinelPath) -ne $sentinelFingerprint) { throw 'Removing the hard link changed the outside sentinel.' }
+    Add-Pass 'hard-link handle-bound cleanup preserves sentinel'
 
     $sampleOwned = $fixtureOwned | Where-Object { $_.Path -eq $samplePath } | Select-Object -First 1
     $manifest = [pscustomobject]@{
@@ -158,6 +178,56 @@ try {
         $badManifest.$field = $manifestMismatches[$field]
         Must-Reject ('manifest ' + $field + ' mismatch') { Assert-ProtectionFixtureManifest $badManifest $runRoot $protectedRoot $dataRoot $imagePath }
     }
+
+    $wrongOwned=$sampleOwned | Select-Object *
+    $wrongOwned.Path=$sameFilePath
+    $wrongDecision=Remove-ProtectionFixtureOwnedPath $wrongOwned
+    if ($wrongDecision.Status -ne 'ERROR' -or (Get-ByteFingerprint $sameFilePath) -ne $existingFileFingerprint) { throw 'Owned identity mismatch was not rejected without changing the evidence path.' }
+    Add-Pass 'owned identity mismatch retains evidence'
+
+    $nonEmptyDirectoryOwned=New-ProtectionFixtureDirectory $nonEmptyDirectoryPath
+    $nonEmptyChildOwned=New-ProtectionFixtureFile $nonEmptyChildPath ([Text.Encoding]::UTF8.GetBytes('non-empty directory child'))
+    [void]$fixtureOwned.Add($nonEmptyDirectoryOwned); [void]$fixtureOwned.Add($nonEmptyChildOwned)
+    $nonEmptyFingerprint=Get-ByteFingerprint $nonEmptyChildPath
+    $nonEmptyDecision=Remove-ProtectionFixtureOwnedPath $nonEmptyDirectoryOwned
+    if ($nonEmptyDecision.Status -ne 'ERROR' -or !(Test-Path -LiteralPath $nonEmptyDirectoryPath -PathType Container) -or (Get-ByteFingerprint $nonEmptyChildPath) -ne $nonEmptyFingerprint) { throw 'Non-empty directory cleanup was not rejected with its evidence retained.' }
+    Add-Pass 'non-empty directory cleanup retains evidence'
+    $nonEmptyChildDecision=Remove-ProtectionFixtureOwnedPath $nonEmptyChildOwned
+    $nonEmptyDirectoryDecision=Remove-ProtectionFixtureOwnedPath $nonEmptyDirectoryOwned
+    if ($nonEmptyChildDecision.Status -ne 'PASS' -or $nonEmptyDirectoryDecision.Status -ne 'PASS') { throw 'Non-empty directory could not be safely cleaned after its child was removed.' }
+    [void]$fixtureOwned.Remove($nonEmptyChildOwned); [void]$fixtureOwned.Remove($nonEmptyDirectoryOwned)
+    Add-Pass 'empty directory handle-bound cleanup'
+
+    $raceOwned=New-ProtectionFixtureFile $racePath ([Text.Encoding]::UTF8.GetBytes('original race object'))
+    $replacementOwned=New-ProtectionFixtureFile $raceReplacementSourcePath ([Text.Encoding]::UTF8.GetBytes('replacement bytes must remain'))
+    [void]$fixtureOwned.Add($raceOwned); [void]$fixtureOwned.Add($replacementOwned)
+    $replacementFingerprint=Get-ByteFingerprint $raceReplacementSourcePath
+    $raceHook = {
+        param($deleteHandle,$originalEntity)
+        Add-ProtectionFixtureNativeType
+        $moved=[YcszFixtureBoundaryNative]::MoveFileEx($raceReplacementSourcePath,$racePath,[uint32](0x1 -bor 0x8))
+        $moveError=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        if (!$moved) { throw (Get-ProtectionFixtureWin32Exception $moveError ('Controlled replacement failed: ' + $racePath)) }
+        $replacementEntity=$null
+        try {
+            $replacementEntity=Get-ProtectionFixtureEntity $racePath
+            if ($replacementEntity.VolumeSerial -eq $originalEntity.VolumeSerial -and $replacementEntity.FileIndex -eq $originalEntity.FileIndex) { throw 'Controlled replacement did not change the path identity.' }
+        } finally { if ($null -ne $replacementEntity) { Close-ProtectionFixtureEntity $replacementEntity } }
+        if ((Get-ByteFingerprint $racePath) -ne $replacementFingerprint) { throw 'Controlled replacement bytes changed before the old handle was dispositioned.' }
+    }
+    $raceDecision=Remove-ProtectionFixtureOwnedPath $raceOwned $raceHook -AllowDeleteShare
+    if ($raceDecision.Status -ne 'PASS' -or !$raceDecision.ReplacementDetected -or !(Test-Path -LiteralPath $racePath -PathType Leaf) -or (Get-ByteFingerprint $racePath) -ne $replacementFingerprint) { throw ('Handle-bound replacement regression failed: ' + $raceDecision.Detail) }
+    [void]$fixtureOwned.Remove($raceOwned)
+    $replacementAtPath=$replacementOwned | Select-Object *
+    $replacementAtPath.Path=$racePath
+    [void]$fixtureOwned.Remove($replacementOwned); [void]$fixtureOwned.Add($replacementAtPath)
+    $replacementCheck=Test-ProtectionFixtureOwnedIdentity $replacementAtPath
+    if ($replacementCheck.Status -ne 'PASS' -or !$replacementCheck.Exists) { throw 'The replacement object identity was not preserved after old-handle disposition.' }
+    Add-Pass 'controlled replacement retains replacement identity and bytes'
+    $replacementDecision=Remove-ProtectionFixtureOwnedPath $replacementAtPath
+    if ($replacementDecision.Status -ne 'PASS' -or (Test-Path -LiteralPath $racePath)) { throw ('Replacement object was not cleaned by its own verified handle: ' + $replacementDecision.Detail) }
+    [void]$fixtureOwned.Remove($replacementAtPath)
+    Add-Pass 'replacement cleanup remains separately owned'
 
     $lockedOwned = New-ProtectionFixtureFile $lockedPath ([Text.Encoding]::UTF8.GetBytes('locked cleanup evidence'))
     [void]$fixtureOwned.Add($lockedOwned)

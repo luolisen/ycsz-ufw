@@ -129,6 +129,8 @@ macOS 安装 Mono 和 NSIS 后：
 
 自保护驱动不随默认构建或安装包生成。具备官方 Windows WDK 的隔离开发机上，可显式执行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -SkipInstaller -BuildDriver`；这只增加 WDK 编译步骤，不代表驱动已签名、安装或加载。驱动的占位 altitude、签名和隔离动态验收见 [驱动工程说明](drivers/YcszProtection/README.md)。
 
+句柄/映射与清理边界可用 `scripts/Test-ProtectionFixtureBoundary.ps1` 在 Windows 临时目录验证；需要真实服务激活的前置句柄和可写映射采用同一进程的 `scripts/Test-ProtectionDriver.ps1 -Mode TwoPhase`，流程与外部 signal 约定见 [两阶段动态验收夹具](docs/validation/TWO-PHASE-DYNAMIC-HARNESS-2026-09-13.md)。两者都不会自动安装、加载或重启驱动/服务。
+
 安全集成测试只在一次性 Windows 虚拟机运行：
 
 ```powershell
@@ -147,6 +149,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-Security.ps1 -D
 
 - [.NET 4.8 内置与双版本安装说明](docs/DOTNET48-BUNDLE.md)
 - [v1.0.0 发布验收](docs/RELEASE-1.0.0-VALIDATION.md)
+- [两阶段 Windows 动态验收夹具](docs/validation/TWO-PHASE-DYNAMIC-HARNESS-2026-09-13.md) · [第八轮句柄绑定清理设计](docs/validation/EIGHTH-ROUND-DESIGN-2026-09-13.md)
 
 ## v1.0.1 修复
 
