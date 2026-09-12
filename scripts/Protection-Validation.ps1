@@ -44,6 +44,25 @@ public static class YcszFixtureBoundaryNative {
     public static extern bool MoveFileEx(string existing, string replacement, uint flags);
     [DllImport("kernel32.dll", SetLastError=true)]
     public static extern bool SetFileInformationByHandle(SafeFileHandle file, int fileInformationClass, ref FileDispositionInfo info, uint size);
+    [DllImport("kernel32.dll", EntryPoint="SetFileInformationByHandle", SetLastError=true)]
+    static extern bool SetFileInformationByHandleRaw(SafeFileHandle file, int fileInformationClass, IntPtr info, uint size);
+    public static bool RenameFileByHandle(SafeFileHandle file, string replacement, out int error) {
+        byte[] name = Encoding.Unicode.GetBytes(replacement);
+        int rootOffset = 4 + (IntPtr.Size == 8 ? 4 : 0);
+        int lengthOffset = rootOffset + IntPtr.Size;
+        int nameOffset = lengthOffset + 4;
+        IntPtr buffer = Marshal.AllocHGlobal(nameOffset + name.Length);
+        try {
+            for (int i = 0; i < nameOffset + name.Length; i++) Marshal.WriteByte(buffer, i, 0);
+            Marshal.WriteInt32(buffer, 0, 0);
+            Marshal.WriteIntPtr(buffer, rootOffset, IntPtr.Zero);
+            Marshal.WriteInt32(buffer, lengthOffset, name.Length);
+            Marshal.Copy(name, 0, IntPtr.Add(buffer, nameOffset), name.Length);
+            bool result = SetFileInformationByHandleRaw(file, 3, buffer, checked((uint)(nameOffset + name.Length)));
+            error = Marshal.GetLastWin32Error();
+            return result;
+        } finally { Marshal.FreeHGlobal(buffer); }
+    }
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
     public static extern uint QueryDosDevice(string device, StringBuilder target, uint max);
 }

@@ -91,6 +91,7 @@ try {
     $hardLinkPath = Join-Path $runRoot 'outside-sentinel-link.bin'
     $lockedPath = Join-Path $runRoot 'locked-owned.bin'
     $racePath = Join-Path $runRoot 'identity-race.bin'
+    $raceBackupPath = Join-Path $runRoot 'identity-race-original-backup.bin'
     $raceReplacementSourcePath = Join-Path $runRoot 'identity-race-replacement-source.bin'
     $nonEmptyDirectoryPath = Join-Path $runRoot 'non-empty-directory'
     $nonEmptyChildPath = Join-Path $nonEmptyDirectoryPath 'child.bin'
@@ -200,12 +201,19 @@ try {
 
     $raceOwned=New-ProtectionFixtureFile $racePath ([Text.Encoding]::UTF8.GetBytes('original race object'))
     $replacementOwned=New-ProtectionFixtureFile $raceReplacementSourcePath ([Text.Encoding]::UTF8.GetBytes('replacement bytes must remain'))
-    [void]$fixtureOwned.Add($raceOwned); [void]$fixtureOwned.Add($replacementOwned)
+    $raceBackupOwned=$raceOwned | Select-Object *
+    $raceBackupOwned.Path=$raceBackupPath
+    $replacementAtPath=$replacementOwned | Select-Object *
+    $replacementAtPath.Path=$racePath
+    [void]$fixtureOwned.Add($raceOwned); [void]$fixtureOwned.Add($replacementOwned); [void]$fixtureOwned.Add($raceBackupOwned); [void]$fixtureOwned.Add($replacementAtPath)
     $replacementFingerprint=Get-ByteFingerprint $raceReplacementSourcePath
     $raceHook = {
         param($deleteHandle,$originalEntity)
         Add-ProtectionFixtureNativeType
-        $moved=[YcszFixtureBoundaryNative]::MoveFileEx($raceReplacementSourcePath,$racePath,[uint32](0x1 -bor 0x8))
+        $renamedError=0
+        $renamed=[YcszFixtureBoundaryNative]::RenameFileByHandle($deleteHandle,$raceBackupPath,[ref]$renamedError)
+        if (!$renamed) { throw (Get-ProtectionFixtureWin32Exception $renamedError ('Controlled handle-bound rename failed (' + (Get-ProtectionWin32ErrorLabel $renamedError) + '): ' + $raceBackupPath)) }
+        $moved=[YcszFixtureBoundaryNative]::MoveFileEx($raceReplacementSourcePath,$racePath,[uint32]0x8)
         $moveError=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
         if (!$moved) { throw (Get-ProtectionFixtureWin32Exception $moveError ('Controlled replacement failed (' + (Get-ProtectionWin32ErrorLabel $moveError) + '): ' + $racePath)) }
         $replacementEntity=$null
@@ -216,11 +224,10 @@ try {
         if ((Get-ByteFingerprint $racePath) -ne $replacementFingerprint) { throw 'Controlled replacement bytes changed before the old handle was dispositioned.' }
     }
     $raceDecision=Remove-ProtectionFixtureOwnedPath $raceOwned $raceHook -AllowDeleteShare
-    if ($raceDecision.Status -ne 'PASS' -or !$raceDecision.ReplacementDetected -or !(Test-Path -LiteralPath $racePath -PathType Leaf) -or (Get-ByteFingerprint $racePath) -ne $replacementFingerprint) { throw ('Handle-bound replacement regression failed: ' + $raceDecision.Detail) }
+    if ($raceDecision.Status -ne 'PASS' -or !$raceDecision.ReplacementDetected -or !(Test-Path -LiteralPath $racePath -PathType Leaf) -or (Test-Path -LiteralPath $raceBackupPath) -or (Get-ByteFingerprint $racePath) -ne $replacementFingerprint) { throw ('Handle-bound replacement regression failed: ' + $raceDecision.Detail) }
     [void]$fixtureOwned.Remove($raceOwned)
-    $replacementAtPath=$replacementOwned | Select-Object *
-    $replacementAtPath.Path=$racePath
-    [void]$fixtureOwned.Remove($replacementOwned); [void]$fixtureOwned.Add($replacementAtPath)
+    [void]$fixtureOwned.Remove($raceBackupOwned)
+    [void]$fixtureOwned.Remove($replacementOwned)
     $replacementCheck=Test-ProtectionFixtureOwnedIdentity $replacementAtPath
     if ($replacementCheck.Status -ne 'PASS' -or !$replacementCheck.Exists) { throw 'The replacement object identity was not preserved after old-handle disposition.' }
     Add-Pass 'controlled replacement retains replacement identity and bytes'

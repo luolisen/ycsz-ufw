@@ -215,6 +215,7 @@ foreach ($needle in @(
     '0x00010080',
     'fileInformationClass',
     'MoveFileEx',
+    'RenameFileByHandle',
     '0x02000000 -bor 0x00200000',
     'CreateHardLink',
     'CreateNew',
