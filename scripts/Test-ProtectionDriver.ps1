@@ -6,6 +6,7 @@ param(
     [string]$ProtectedRoot,
     [string]$ProtectedDataRoot,
     [string]$ServiceImagePath,
+    [string]$FixtureManifestPath,
     [string]$ResultPath,
     [switch]$AllowFixtureMutation
 )
@@ -167,7 +168,35 @@ function Invoke-DynamicPathCleanup([string]$Name,[string]$Path,[scriptblock]$Act
     catch { Add-DynamicCleanupError $Name $Path 'PowerShell cleanup exception.' $_ $null }
 }
 
-function Invoke-DynamicWritableMapping([string]$Name,[string]$Path,[bool]$IsControl,[bool]$ControlSucceeded) {
+function Add-DynamicOwned([object]$Owned,[object]$Context) {
+    if ($null -ne $Owned) { [void]$Context.Owned.Add($Owned) }
+    return $Owned
+}
+
+function Invoke-DynamicOwnedCleanup([object]$Context) {
+    if ($null -eq $Context -or $null -eq $Context.Owned) { return }
+    foreach ($owned in @($Context.Owned | Sort-Object { $_.Path.Length } -Descending)) {
+        $decision=Remove-ProtectionFixtureOwnedPath $owned
+        if ($decision.Status -eq 'ERROR') { Add-Result ('owned fixture cleanup ' + $owned.Path) 'ERROR' $decision.Detail }
+    }
+}
+
+function New-DynamicJunctionOwned([string]$Path,[string]$Target) {
+    $full=[IO.Path]::GetFullPath($Path)
+    New-Item -ItemType Junction -LiteralPath $full -Target ([IO.Path]::GetFullPath($Target)) -ErrorAction Stop | Out-Null
+    $entity=$null
+    try {
+        $entity=Get-ProtectionFixtureEntity $full
+        if (($entity.Attributes -band 0x400) -eq 0 -or !$entity.IsDirectory) { throw "Junction identity was not confirmed: $full" }
+        return [pscustomobject]@{ Path=$full; Kind='Junction'; VolumeSerial=$entity.VolumeSerial; FileIndex=$entity.FileIndex; Attributes=$entity.Attributes; NumberOfLinks=$entity.NumberOfLinks }
+    } catch {
+        if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity; $entity=$null }
+        try { Remove-Item -LiteralPath $full -Force -ErrorAction Stop } catch { }
+        throw
+    } finally { if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity } }
+}
+
+function Invoke-DynamicWritableMapping([string]$Name,[string]$Path,[bool]$IsControl,[bool]$ControlSucceeded,$ExpectedIdentity) {
     $stream = $null
     $mapping = [IntPtr]::Zero
     $view = [IntPtr]::Zero
@@ -178,6 +207,15 @@ function Invoke-DynamicWritableMapping([string]$Name,[string]$Path,[bool]$IsCont
         } catch {
             Add-DynamicExceptionResult $Name 'mapping-open' 'mapping-open' $_ $ControlSucceeded
             return $false
+        }
+        if ($null -ne $ExpectedIdentity) {
+            try {
+                $opened = Get-ProtectionFixtureHandleEntity $stream.SafeFileHandle $Path
+                if ($opened.VolumeSerial -ne [uint64]$ExpectedIdentity.VolumeSerial -or $opened.FileIndex -ne [uint64]$ExpectedIdentity.FileIndex -or $opened.Length -ne [uint64]$ExpectedIdentity.Length -or $opened.NumberOfLinks -ne [uint64]$ExpectedIdentity.NumberOfLinks -or ($opened.Attributes -band 0x400) -ne 0) {
+                    Add-Result $Name 'ERROR' 'The opened handle identity did not match the manifest; no write or mapping operation was attempted.'
+                    return $false
+                }
+            } catch { Add-DynamicExceptionResult $Name 'mapping-open' 'mapping-open' $_ $ControlSucceeded; return $false }
         }
         try {
             $stream.SafeFileHandle.DangerousAddRef([ref]$addedRef)
@@ -236,192 +274,226 @@ function Invoke-DynamicWritableMapping([string]$Name,[string]$Path,[bool]$IsCont
 }
 
 function Require-DynamicPreconditions {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-    if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Dynamic mode requires an elevated Windows PowerShell.' }
-    if (!$AllowFixtureMutation) { throw 'Dynamic mode requires -AllowFixtureMutation because it exercises a disposable fixture.' }
-    if ([string]::IsNullOrWhiteSpace($FixtureRoot) -or [string]::IsNullOrWhiteSpace($ProtectedRoot) -or [string]::IsNullOrWhiteSpace($ProtectedDataRoot) -or [string]::IsNullOrWhiteSpace($ServiceImagePath)) {
-        throw 'Dynamic mode requires FixtureRoot, ProtectedRoot, ProtectedDataRoot and ServiceImagePath.'
+    $scope=$null
+    try {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Dynamic mode requires an elevated Windows PowerShell.' }
+        if (!$AllowFixtureMutation) { throw 'Dynamic mode requires -AllowFixtureMutation because it exercises a disposable fixture.' }
+        if ([string]::IsNullOrWhiteSpace($FixtureRoot) -or [string]::IsNullOrWhiteSpace($ProtectedRoot) -or [string]::IsNullOrWhiteSpace($ProtectedDataRoot) -or [string]::IsNullOrWhiteSpace($ServiceImagePath)) {
+            throw 'Dynamic mode requires FixtureRoot, ProtectedRoot, ProtectedDataRoot and ServiceImagePath.'
+        }
+        $fixture = [IO.Path]::GetFullPath($FixtureRoot)
+        $protected = [IO.Path]::GetFullPath($ProtectedRoot)
+        $dataRoot = [IO.Path]::GetFullPath($ProtectedDataRoot)
+        $image = [IO.Path]::GetFullPath($ServiceImagePath)
+        Assert-ProtectionFixtureChild $fixture $protected
+        Assert-ProtectionFixtureChild $fixture $dataRoot
+        Assert-ProtectionFixtureChild $fixture $image
+        if (!Test-ProtectionFixturePathEquals ([IO.Path]::GetDirectoryName($image)) $protected) { throw 'ProtectedRoot must be exactly the ServiceImagePath directory.' }
+        $marker = Join-Path $fixture '.ycsz-dynamic-fixture'
+        if (!(Test-Path -LiteralPath $marker -PathType Leaf)) { throw "Missing disposable fixture marker: $marker" }
+        $manifestPath = if ([string]::IsNullOrWhiteSpace($FixtureManifestPath)) { Join-Path $fixture '.ycsz-dynamic-fixture.json' } else { [IO.Path]::GetFullPath($FixtureManifestPath) }
+        Assert-ProtectionFixtureChild $fixture $manifestPath
+        if (!(Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Missing fixture manifest: $manifestPath" }
+        $scope = New-ProtectionFixtureScope $fixture @($protected,$dataRoot,$marker,$manifestPath) @() @($manifestPath,$marker)
+        $manifestText = Get-Content -LiteralPath $manifestPath -Raw
+        $manifest = $manifestText | ConvertFrom-Json
+        $manifestFiles = @(Assert-ProtectionFixtureManifest $manifest $fixture $protected $dataRoot $image)
+        $protectedPrefix=$protected.TrimEnd('\')+'\'
+        $dataPrefix=$dataRoot.TrimEnd('\')+'\'
+        foreach ($entry in $manifestFiles) {
+            $samplePath=[IO.Path]::GetFullPath([string]$entry.Path)
+            if (!$samplePath.StartsWith($protectedPrefix,[StringComparison]::OrdinalIgnoreCase) -and !$samplePath.StartsWith($dataPrefix,[StringComparison]::OrdinalIgnoreCase)) {
+                throw "Protected sample is outside the requested protected roots: $samplePath"
+            }
+        }
+        if ((Get-Content -LiteralPath $manifestPath -Raw) -cne $manifestText) { throw 'Fixture manifest changed while the stable scope was being established.' }
+        foreach ($path in @($marker,$manifestPath,$image)) {
+            $entity=$null
+            $share=if ([string]::Equals($path,$manifestPath,[StringComparison]::OrdinalIgnoreCase) -or [string]::Equals($path,$marker,[StringComparison]::OrdinalIgnoreCase)) { [uint32]1 } else { [uint32]3 }
+            try { $entity=Assert-ProtectionFixtureEntity (Get-ProtectionFixtureEntity $path $share) }
+            finally { if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity } }
+        }
+        foreach ($entry in $manifestFiles) {
+            $entity=$null
+            try {
+                $entity=Assert-ProtectionFixtureEntity (Get-ProtectionFixtureEntity ([string]$entry.Path) 3)
+                if ($entity.Length -ne [uint64]$entry.Length -or $entity.VolumeSerial -ne [uint64]$entry.VolumeSerial -or $entity.FileIndex -ne [uint64]$entry.FileIndex -or $entity.NumberOfLinks -ne [uint64]$entry.NumberOfLinks) {
+                    throw "Protected sample identity or length does not match the manifest: $($entry.Path)"
+                }
+            } finally { if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity } }
+        }
+
+        $driver = Get-Service -Name YcszProtection -ErrorAction Stop
+        if ($driver.Status -ne 'Running') { throw 'YcszProtection must already be running in the disposable harness.' }
+        $service = Get-Service -Name YcszFirewall -ErrorAction Stop
+        if ($service.Status -ne 'Running') { throw 'YcszFirewall must already be running in the disposable harness.' }
+        $serviceInfo = Get-CimInstance Win32_Service -Filter "Name='YcszFirewall'" -ErrorAction Stop
+        if ($null -eq $serviceInfo -or $serviceInfo.StartName -ne 'LocalSystem' -or [int]$serviceInfo.ProcessId -le 0) { throw 'SCM service identity or PID was not available.' }
+        Assert-ProtectionServiceCommand ([string]$serviceInfo.PathName) $image
+        $serviceProcess = Get-Process -Id ([int]$serviceInfo.ProcessId) -ErrorAction Stop
+        if ($serviceProcess.HasExited -or $serviceProcess.SessionId -ne 0 -or ![string]::Equals([IO.Path]::GetFullPath($serviceProcess.MainModule.FileName),$image,[StringComparison]::OrdinalIgnoreCase)) { throw 'SCM PID does not resolve to the requested session-0 fixture image.' }
+
+        $trustedKey='HKLM:\SYSTEM\CurrentControlSet\Services\YcszProtection\Parameters'
+        $trusted=Get-ItemProperty -LiteralPath $trustedKey -ErrorAction Stop
+        $expectedNtImage=ConvertTo-ProtectionFixtureNtPath $image
+        $expectedNtData=ConvertTo-ProtectionFixtureNtPath $dataRoot
+        if ([string]::IsNullOrWhiteSpace([string]$trusted.TrustedImagePath) -or ![string]::Equals([string]$trusted.TrustedImagePath,$expectedNtImage,[StringComparison]::OrdinalIgnoreCase)) { throw 'YcszProtection TrustedImagePath does not match the SCM fixture image.' }
+        if ([string]::IsNullOrWhiteSpace([string]$trusted.TrustedDataRoot) -or ![string]::Equals([string]$trusted.TrustedDataRoot,$expectedNtData,[StringComparison]::OrdinalIgnoreCase)) { throw 'YcszProtection TrustedDataRoot does not match the requested fixture data root.' }
+
+        $probe = & $image --protection-status 2>&1 | Out-String
+        $probeExit=$LASTEXITCODE
+        if ($probeExit -ne 0) { throw "The bound fixture service did not confirm v4 activation: $probe" }
+        return [pscustomobject]@{ FixtureRoot=$fixture; ProtectedRoot=$protected; ProtectedDataRoot=$dataRoot; ServiceImagePath=$image; Manifest=$manifest; ProtectedFiles=$manifestFiles; Scope=$scope; Owned=(New-Object 'System.Collections.Generic.List[object]'); RunId=([guid]::NewGuid().ToString('N')); ServicePid=[int]$serviceInfo.ProcessId }
+    } catch {
+        if ($null -ne $scope) { Close-ProtectionFixtureScope $scope }
+        throw
     }
-    $fixture = [IO.Path]::GetFullPath($FixtureRoot)
-    foreach ($root in @($ProtectedRoot,$ProtectedDataRoot)) {
-        Assert-ProtectionFixtureChild $fixture $root
-    }
-    $marker = Join-Path $fixture '.ycsz-dynamic-fixture'
-    if (!(Test-Path -LiteralPath $marker -PathType Leaf)) { throw "Missing disposable fixture marker: $marker" }
-    $driver = Get-Service -Name YcszProtection -ErrorAction SilentlyContinue
-    if (!$driver -or $driver.Status -ne 'Running') { throw 'YcszProtection must already be running in the disposable harness.' }
-    $app = Get-Service -Name YcszFirewall -ErrorAction SilentlyContinue
-    if (!$app -or $app.Status -ne 'Running') { throw 'YcszFirewall must already be running in the disposable harness.' }
-    if (!(Test-Path -LiteralPath $ServiceImagePath -PathType Leaf)) { throw "ServiceImagePath does not exist: $ServiceImagePath" }
-    $image = [IO.Path]::GetFullPath($ServiceImagePath)
-    Assert-ProtectionFixtureChild $fixture $image
-    $probe = & $image --protection-status 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) { throw "The harness is Running but v4 activation was not confirmed: $probe" }
 }
 
 function Invoke-DynamicChecks {
-    try { Require-DynamicPreconditions } catch { Add-Result 'dynamic preflight' 'BLOCKED' $_.Exception.Message; return }
-    try { Add-NativeDynamicType }
-    catch { Add-Result 'dynamic native bindings' 'ERROR' $_.Exception.Message; return }
-    $file = Join-Path ([IO.Path]::GetFullPath($ProtectedRoot)) 'existing-handle.bin'
-    $dataFile = Join-Path ([IO.Path]::GetFullPath($ProtectedDataRoot)) 'existing-handle.bin'
-    foreach ($candidate in @($file,$dataFile)) {
-        Add-Result ('pre-active existing handle ' + $candidate) 'BLOCKED' 'No safe two-phase fixture holds this handle before activation; a pre-existing file is not evidence of a pre-existing handle.'
-        Add-Result ('pre-active writable mapping ' + $candidate) 'BLOCKED' 'No safe two-phase fixture holds this mapping before activation; a post-Active mapping cannot prove this condition.'
-    }
-    foreach ($candidate in @($file,$dataFile)) {
-        if (!(Test-Path -LiteralPath $candidate -PathType Leaf)) { Add-Result 'protected fixture files' 'BLOCKED' "The protected fixture file is missing: $candidate"; return }
-    }
-
-    $ordinary = Join-Path ([IO.Path]::GetFullPath($FixtureRoot)) 'ordinary-unprotected.bin'
-    $ordinaryRoot = Join-Path ([IO.Path]::GetFullPath($FixtureRoot)) 'ordinary-controls'
-    $ordinaryHardlinkTarget = Join-Path $ordinaryRoot 'hardlink-target.bin'
-    $ordinaryHardlink = Join-Path $ordinaryRoot 'hardlink.bin'
-    $ordinaryJunctionTarget = Join-Path $ordinaryRoot 'junction-target'
-    $ordinaryJunction = Join-Path $ordinaryRoot 'junction'
-    $ordinaryControlSucceeded = $false
+    $context=$null
+    try { $context=Require-DynamicPreconditions } catch { Add-Result 'dynamic preflight' 'BLOCKED' $_.Exception.Message; return }
     try {
-        [IO.File]::WriteAllText($ordinary,'ordinary fixture write')
-        $ordinaryControlSucceeded = $true
-        Add-Result 'ordinary non-product write' 'PASS' 'An unrelated fixture path remains writable; no global unknown-path denial observed.'
-    } catch { Add-DynamicExceptionResult 'ordinary non-product write' 'ordinary-write' 'ordinary-write' $_ $false }
+        try { Add-NativeDynamicType }
+        catch { Add-Result 'dynamic native bindings' 'ERROR' $_.Exception.Message; return }
+        $fileEntries=@($context.ProtectedFiles)
+        $filePaths=@($fileEntries | ForEach-Object { [IO.Path]::GetFullPath([string]$_.Path) })
+        foreach ($candidate in $filePaths) {
+            Add-Result ('pre-active existing handle ' + $candidate) 'BLOCKED' 'No safe two-phase fixture holds this handle before activation; a pre-existing file is not evidence of a pre-existing handle.'
+            Add-Result ('pre-active writable mapping ' + $candidate) 'BLOCKED' 'No safe two-phase fixture holds this mapping before activation; a post-Active mapping cannot prove this condition.'
+        }
 
-    foreach ($candidate in @($file,$dataFile)) {
-        $stream = $null
+        $ordinary=Join-Path $context.FixtureRoot ('ordinary-unprotected-' + $context.RunId + '.bin')
+        $ordinaryRoot=Join-Path $context.FixtureRoot ('ordinary-controls-' + $context.RunId)
+        $ordinaryHardlinkTarget=Join-Path $ordinaryRoot 'hardlink-target.bin'
+        $ordinaryHardlink=Join-Path $ordinaryRoot 'hardlink.bin'
+        $ordinaryJunctionTarget=Join-Path $ordinaryRoot 'junction-target'
+        $ordinaryJunction=Join-Path $ordinaryRoot 'junction'
+        $ordinaryControlSucceeded=$false
         try {
-            $stream = New-Object IO.FileStream($candidate,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+            $owned=New-ProtectionFixtureFile $ordinary ([Text.Encoding]::UTF8.GetBytes('ordinary fixture write'))
+            [void](Add-DynamicOwned $owned $context)
+            $ordinaryControlSucceeded=$true
+            Add-Result 'ordinary non-product write' 'PASS' 'A unique ordinary fixture file was created with CreateNew and remains writable.'
+        } catch { Add-DynamicExceptionResult 'ordinary non-product write' 'ordinary-write' 'ordinary-write' $_ $false }
+
+        foreach ($entry in $fileEntries) {
+            $candidate=[IO.Path]::GetFullPath([string]$entry.Path)
+            $stream=$null
             try {
-                $stream.WriteByte(65)
-                $stream.Flush()
-                Add-Result ('post-active new handle write ' + $candidate) 'FAIL' 'A new non-service handle opened after Active and wrote successfully.'
-            } catch { Add-DynamicExceptionResult ('post-active new handle write ' + $candidate) 'file-write' 'file-write' $_ $ordinaryControlSucceeded }
-        } catch { Add-DynamicExceptionResult ('post-active new handle open ' + $candidate) 'file-open' 'file-open' $_ $ordinaryControlSucceeded }
-        finally {
-            if ($null -ne $stream) {
-                try { $stream.Dispose() }
-                catch { Add-DynamicCleanupError ('post-active new handle cleanup ' + $candidate) $candidate 'FileStream.Dispose raised an exception.' $_ $null }
+                $stream=New-Object IO.FileStream($candidate,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+                $opened=Get-ProtectionFixtureHandleEntity $stream.SafeFileHandle $candidate
+                if ($opened.VolumeSerial -ne [uint64]$entry.VolumeSerial -or $opened.FileIndex -ne [uint64]$entry.FileIndex -or $opened.Length -ne [uint64]$entry.Length -or $opened.NumberOfLinks -ne [uint64]$entry.NumberOfLinks -or ($opened.Attributes -band 0x400) -ne 0) {
+                    Add-Result ('post-active new handle open ' + $candidate) 'ERROR' 'The opened handle identity did not match the protected-file manifest; no write was attempted.'
+                    continue
+                }
+                try {
+                    $stream.WriteByte(65)
+                    $stream.Flush()
+                    Add-Result ('post-active new handle write ' + $candidate) 'FAIL' 'A new non-service handle opened after Active and wrote successfully.'
+                } catch { Add-DynamicExceptionResult ('post-active new handle write ' + $candidate) 'file-write' 'file-write' $_ $ordinaryControlSucceeded }
+            } catch { Add-DynamicExceptionResult ('post-active new handle open ' + $candidate) 'file-open' 'file-open' $_ $ordinaryControlSucceeded }
+            finally {
+                if ($null -ne $stream) {
+                    try { $stream.Dispose() }
+                    catch { Add-DynamicCleanupError ('post-active new handle cleanup ' + $candidate) $candidate 'FileStream.Dispose raised an exception.' $_ $null }
+                }
             }
         }
-    }
 
-    $hardlinkControlSucceeded = $false
-    $link = Join-Path ([IO.Path]::GetFullPath($ProtectedRoot)) 'dynamic-hardlink.bin'
-    try {
-        New-Item -ItemType Directory -Path $ordinaryRoot -Force -ErrorAction Stop | Out-Null
-        [IO.File]::WriteAllText($ordinaryHardlinkTarget,'ordinary hardlink target')
-        New-Item -ItemType HardLink -Path $ordinaryHardlink -Target $ordinaryHardlinkTarget -ErrorAction Stop | Out-Null
-        $hardlinkControlSucceeded = $true
-        Add-Result 'ordinary hard link control' 'PASS' 'An ordinary fixture hard link was created successfully.'
-    } catch { Add-DynamicExceptionResult 'ordinary hard link control' 'hardlink-create' 'hardlink-create' $_ $false }
-    finally {
-        if (Test-Path -LiteralPath $ordinaryHardlink) { Invoke-DynamicPathCleanup 'ordinary hard link control cleanup' $ordinaryHardlink { Remove-Item -LiteralPath $ordinaryHardlink -Force -ErrorAction Stop } }
-    }
-    if (!$hardlinkControlSucceeded) {
-        Add-Result 'hard link mutation' 'BLOCKED' 'The ordinary hard-link control could not be established; target failure is not attributable to protection.'
-    } elseif (Test-Path -LiteralPath $link) {
-        Add-Result 'hard link mutation' 'ERROR' "The target hard-link evidence path already exists: $link"
-    } else {
+        $hardlinkControlSucceeded=$false
+        $link=Join-Path $context.ProtectedRoot ('dynamic-hardlink-' + $context.RunId + '.bin')
         try {
-            New-Item -ItemType HardLink -Path $link -Target $file -ErrorAction Stop | Out-Null
-            Add-Result 'hard link mutation' 'FAIL' 'Hard link creation succeeded after Active.'
-        } catch { Add-DynamicExceptionResult 'hard link mutation' 'hardlink-create' 'hardlink-create' $_ $true }
-        finally {
-            if (Test-Path -LiteralPath $link) { Invoke-DynamicPathCleanup 'hard link mutation cleanup' $link { Remove-Item -LiteralPath $link -Force -ErrorAction Stop } }
+            $owned=New-ProtectionFixtureDirectory $ordinaryRoot; [void](Add-DynamicOwned $owned $context)
+            $owned=New-ProtectionFixtureFile $ordinaryHardlinkTarget ([Text.Encoding]::UTF8.GetBytes('ordinary hardlink target')); [void](Add-DynamicOwned $owned $context)
+            $owned=New-ProtectionFixtureHardLink $ordinaryHardlink $ordinaryHardlinkTarget; [void](Add-DynamicOwned $owned $context)
+            $hardlinkControlSucceeded=$true
+            Add-Result 'ordinary hard link control' 'PASS' 'An ordinary unique fixture hard link was created with the native CreateHardLink API.'
+        } catch { Add-DynamicExceptionResult 'ordinary hard link control' 'hardlink-create' 'hardlink-create' $_ $false }
+        if (!$hardlinkControlSucceeded) {
+            Add-Result 'hard link mutation' 'BLOCKED' 'The ordinary hard-link control could not be established; target failure is not attributable to protection.'
+        } else {
+            try {
+                $owned=New-ProtectionFixtureHardLink $link $filePaths[0]; [void](Add-DynamicOwned $owned $context)
+                Add-Result 'hard link mutation' 'FAIL' 'Hard link creation succeeded after Active.'
+            } catch { Add-DynamicExceptionResult 'hard link mutation' 'hardlink-create' 'hardlink-create' $_ $true }
         }
-    }
 
-    $junctionControlSucceeded = $false
-    $junction = Join-Path ([IO.Path]::GetFullPath($ProtectedRoot)) 'dynamic-junction'
-    try {
-        New-Item -ItemType Directory -Path $ordinaryJunctionTarget -Force -ErrorAction Stop | Out-Null
-        New-Item -ItemType Junction -Path $ordinaryJunction -Target $ordinaryJunctionTarget -ErrorAction Stop | Out-Null
-        $junctionControlSucceeded = $true
-        Add-Result 'ordinary reparse-point control' 'PASS' 'An ordinary fixture junction was created successfully.'
-    } catch { Add-DynamicExceptionResult 'ordinary reparse-point control' 'junction-create' 'junction-create' $_ $false }
-    finally {
-        if (Test-Path -LiteralPath $ordinaryJunction) { Invoke-DynamicPathCleanup 'ordinary reparse-point control cleanup' $ordinaryJunction { Remove-Item -LiteralPath $ordinaryJunction -Force -ErrorAction Stop } }
-    }
-    if (!$junctionControlSucceeded) {
-        Add-Result 'reparse-point mutation' 'BLOCKED' 'The ordinary junction control could not be established; target failure is not attributable to protection.'
-    } elseif (Test-Path -LiteralPath $junction) {
-        Add-Result 'reparse-point mutation' 'ERROR' "The target junction evidence path already exists: $junction"
-    } else {
+        $junctionControlSucceeded=$false
+        $junction=Join-Path $context.ProtectedRoot ('dynamic-junction-' + $context.RunId)
         try {
-            New-Item -ItemType Junction -Path $junction -Target ([IO.Path]::GetFullPath($ProtectedDataRoot)) -ErrorAction Stop | Out-Null
-            Add-Result 'reparse-point mutation' 'FAIL' 'Junction creation succeeded after Active.'
-        } catch { Add-DynamicExceptionResult 'reparse-point mutation' 'junction-create' 'junction-create' $_ $true }
-        finally {
-            if (Test-Path -LiteralPath $junction) { Invoke-DynamicPathCleanup 'reparse-point mutation cleanup' $junction { Remove-Item -LiteralPath $junction -Force -ErrorAction Stop } }
+            $owned=New-ProtectionFixtureDirectory $ordinaryJunctionTarget; [void](Add-DynamicOwned $owned $context)
+            $owned=New-DynamicJunctionOwned $ordinaryJunction $ordinaryJunctionTarget; [void](Add-DynamicOwned $owned $context)
+            $junctionControlSucceeded=$true
+            Add-Result 'ordinary reparse-point control' 'PASS' 'An ordinary unique fixture junction was created and identified as a reparse point.'
+        } catch { Add-DynamicExceptionResult 'ordinary reparse-point control' 'junction-create' 'junction-create' $_ $false }
+        if (!$junctionControlSucceeded) {
+            Add-Result 'reparse-point mutation' 'BLOCKED' 'The ordinary junction control could not be established; target failure is not attributable to protection.'
+        } else {
+            try {
+                $owned=New-DynamicJunctionOwned $junction $context.ProtectedDataRoot; [void](Add-DynamicOwned $owned $context)
+                Add-Result 'reparse-point mutation' 'FAIL' 'Junction creation succeeded after Active.'
+            } catch { Add-DynamicExceptionResult 'reparse-point mutation' 'junction-create' 'junction-create' $_ $true }
         }
-    }
 
-    $mappingControlSucceeded = $false
-    if (!$ordinaryControlSucceeded) {
-        Add-Result 'ordinary writable mapping' 'BLOCKED' 'The ordinary writable-file control failed; target mapping denial is not attributable to protection.'
-    } else {
-        $mappingControlSucceeded = Invoke-DynamicWritableMapping 'ordinary writable mapping' $ordinary $true $false
-    }
-    if (!$mappingControlSucceeded) {
-        Add-Result 'writable mapping' 'BLOCKED' 'The ordinary mapping control did not complete; target mapping evidence is unavailable.'
-    } else {
-        [void](Invoke-DynamicWritableMapping 'writable mapping' $file $false $true)
-    }
-
-    Add-Result 'normal trusted service writeback' 'BLOCKED' 'This runner does not impersonate the already authenticated service writer; use the isolated service harness to prove an in-root content update and cache writeback.'
-    Add-Result 'ordinary SYSTEM writer' 'BLOCKED' 'This run does not manufacture a second SYSTEM token; use the isolated service harness for that identity.'
-    Add-Result 'PID/session restart' 'BLOCKED' 'Requires a real user session transition and a service-controlled tray restart; no logout or reboot is performed by this tool.'
-
-    $device = [YcszDynamicNative]::CreateFile('\\.\YcszProtection',0xC0000000,3,[IntPtr]::Zero,3,0,[IntPtr]::Zero)
-    $deviceError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-    if ($device -eq $null -or $device.IsInvalid) {
-        $deviceDetail = if ($null -ne $deviceError -and $deviceError -ne 0) { 'The dynamic runner could not open the protected control device: ' + (Get-ProtectionWin32ErrorLabel $deviceError) } else { 'The dynamic runner could not open the protected control device; no reliable native error was returned.' }
-        Add-Result 'unload concurrency control handle' 'BLOCKED' $deviceDetail
-        if ($null -ne $device) {
-            try { $device.Dispose() }
-            catch { Add-DynamicCleanupError 'unload concurrency control handle cleanup' '\\.\YcszProtection' 'Invalid control device Dispose raised an exception.' $_ $null }
+        $mappingControlSucceeded=$false
+        if (!$ordinaryControlSucceeded) {
+            Add-Result 'ordinary writable mapping' 'BLOCKED' 'The ordinary writable-file control failed; target mapping denial is not attributable to protection.'
+        } else {
+            $mappingControlSucceeded=Invoke-DynamicWritableMapping 'ordinary writable mapping' $ordinary $true $false $null
         }
-    } else {
+        if (!$mappingControlSucceeded) {
+            Add-Result 'writable mapping' 'BLOCKED' 'The ordinary mapping control did not complete; target mapping evidence is unavailable.'
+        } else {
+            [void](Invoke-DynamicWritableMapping 'writable mapping' $filePaths[0] $false $true $fileEntries[0])
+        }
+
+        Add-Result 'normal trusted service writeback' 'BLOCKED' 'This runner does not impersonate the already authenticated service writer; use the isolated service harness to prove an in-root content update and cache writeback.'
+        Add-Result 'ordinary SYSTEM writer' 'BLOCKED' 'This run does not manufacture a second SYSTEM token; use the isolated service harness for that identity.'
+        Add-Result 'PID/session restart' 'BLOCKED' 'Requires a real user session transition and a service-controlled tray restart; no logout or reboot is performed by this tool.'
+
+        $device=[YcszDynamicNative]::CreateFile('\\.\YcszProtection',0xC0000000,3,[IntPtr]::Zero,3,0,[IntPtr]::Zero)
+        $deviceError=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        if ($device -eq $null -or $device.IsInvalid) {
+            $deviceDetail=if ($null -ne $deviceError -and $deviceError -ne 0) { 'The dynamic runner could not open the protected control device: ' + (Get-ProtectionWin32ErrorLabel $deviceError) } else { 'The dynamic runner could not open the protected control device; no reliable native error was returned.' }
+            Add-Result 'unload concurrency control handle' 'BLOCKED' $deviceDetail
+            if ($null -ne $device) { try { $device.Dispose() } catch { Add-DynamicCleanupError 'unload concurrency control handle cleanup' '\\.\YcszProtection' 'Invalid control device Dispose raised an exception.' $_ $null } }
+        } else {
+            try {
+                $fltmc=Join-Path $env:WINDIR 'System32\fltmc.exe'
+                if (!(Test-Path -LiteralPath $fltmc -PathType Leaf)) { Add-Result 'unload concurrency control handle' 'ERROR' "fltmc.exe was not found: $fltmc" }
+                else {
+                    $unload=& $fltmc unload YcszProtection 2>&1 | Out-String; $unloadExit=$LASTEXITCODE
+                    $filters=& $fltmc filters 2>&1 | Out-String; $filtersExit=$LASTEXITCODE
+                    $filterPresent=$filtersExit -eq 0 -and $filters -match '(?i)YcszProtection'
+                    $decision=Test-ProtectionExpectedUnloadRejection $unloadExit $unload $filterPresent
+                    Add-Result 'unload concurrency control handle' $decision.Status ($decision.Detail + (' fltmc exit={0}; filter-query exit={1}.' -f $unloadExit,$filtersExit))
+                }
+            } catch { Add-Result 'unload concurrency control handle' 'ERROR' ('fltmc invocation failed: ' + $_.Exception.Message) }
+            finally { try { $device.Dispose() } catch { Add-DynamicCleanupError 'unload concurrency control handle cleanup' '\\.\YcszProtection' 'Control device Dispose raised an exception.' $_ $null } }
+        }
+
+        $ordinaryDelete=Join-Path $context.FixtureRoot ('ordinary-delete-control-' + $context.RunId)
+        $deleteFile=Join-Path $ordinaryDelete 'file.bin'
+        $deleteControl=$false
         try {
-            $fltmc = Join-Path $env:WINDIR 'System32\fltmc.exe'
-            if (!(Test-Path -LiteralPath $fltmc -PathType Leaf)) {
-                Add-Result 'unload concurrency control handle' 'ERROR' "fltmc.exe was not found: $fltmc"
-            } else {
-                $unload = & $fltmc unload YcszProtection 2>&1 | Out-String
-                $unloadExit = $LASTEXITCODE
-                $filters = & $fltmc filters 2>&1 | Out-String
-                $filtersExit = $LASTEXITCODE
-                $filterPresent = $filtersExit -eq 0 -and $filters -match '(?i)YcszProtection'
-                $decision = Test-ProtectionExpectedUnloadRejection $unloadExit $unload $filterPresent
-                Add-Result 'unload concurrency control handle' $decision.Status ($decision.Detail + (' fltmc exit={0}; filter-query exit={1}.' -f $unloadExit,$filtersExit))
+            $deleteOwnedDirectory=New-ProtectionFixtureDirectory $ordinaryDelete; [void](Add-DynamicOwned $deleteOwnedDirectory $context)
+            $owned=New-ProtectionFixtureFile $deleteFile ([Text.Encoding]::UTF8.GetBytes('ordinary delete control')); [void](Add-DynamicOwned $owned $context)
+            $fileDecision=Remove-ProtectionFixtureOwnedPath $owned
+            if ($fileDecision.Status -ne 'PASS') { Add-Result 'ordinary directory deletion control' $fileDecision.Status $fileDecision.Detail }
+            else {
+                $dirDecision=Remove-ProtectionFixtureOwnedPath $deleteOwnedDirectory
+                if ($dirDecision.Status -eq 'PASS') { $deleteControl=$true; Add-Result 'ordinary directory deletion control' 'PASS' 'An ordinary unique fixture directory and its owned file were deleted by identity.' }
+                else { Add-Result 'ordinary directory deletion control' $dirDecision.Status $dirDecision.Detail }
             }
-        } catch { Add-Result 'unload concurrency control handle' 'ERROR' ('fltmc invocation failed: ' + $_.Exception.Message) }
-        finally {
-            try { $device.Dispose() }
-            catch { Add-DynamicCleanupError 'unload concurrency control handle cleanup' '\\.\YcszProtection' 'Control device Dispose raised an exception.' $_ $null }
-        }
-    }
-
-    $ordinaryDelete = Join-Path ([IO.Path]::GetFullPath($FixtureRoot)) 'ordinary-delete-control'
-    try {
-        New-Item -ItemType Directory -Path $ordinaryDelete -Force -ErrorAction Stop | Out-Null
-        [IO.File]::WriteAllText((Join-Path $ordinaryDelete 'file.bin'),'ordinary delete control')
-        Remove-Item -LiteralPath $ordinaryDelete -Recurse -Force -ErrorAction Stop
-        Add-Result 'ordinary directory deletion control' 'PASS' 'An ordinary fixture directory was deleted successfully.'
-    } catch { Add-DynamicExceptionResult 'ordinary directory deletion control' 'directory-delete' 'directory-delete' $_ $false }
-    if (!(Test-Path -LiteralPath ([IO.Path]::GetFullPath($ProtectedRoot)))) {
-        Add-Result 'protected directory itself' 'BLOCKED' 'The protected root disappeared before the destructive directory check.'
-    } else {
-        try {
-            Remove-Item -LiteralPath ([IO.Path]::GetFullPath($ProtectedRoot)) -Recurse -Force -ErrorAction Stop
-            Add-Result 'protected directory itself' 'FAIL' 'Protected directory removal succeeded.'
-        } catch { Add-DynamicExceptionResult 'protected directory itself' 'directory-delete' 'directory-delete' $_ $true }
-    }
-
-    foreach ($path in @($ordinary,$ordinaryHardlinkTarget,$ordinaryJunctionTarget,$ordinaryRoot)) {
-        if (Test-Path -LiteralPath $path) {
-            Invoke-DynamicPathCleanup 'ordinary fixture cleanup' $path { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop }
-        }
+        } catch { Add-DynamicExceptionResult 'ordinary directory deletion control' 'directory-delete' 'directory-delete' $_ $false }
+        Add-Result 'protected directory itself' 'BLOCKED' 'The protected-root handle is retained to bind entity identity; deleting that root safely would require releasing the guard and cannot be claimed as an anti-race check.'
+    } catch { Add-Result 'dynamic runner integrity' 'ERROR' $_.Exception.Message }
+    finally {
+        Invoke-DynamicOwnedCleanup $context
+        Close-ProtectionFixtureScope $context.Scope
     }
 }
 

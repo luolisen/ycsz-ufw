@@ -160,18 +160,58 @@ $cleanup = Resolve-ProtectionCleanupFailure 'C:\fixture\evidence.bin' 'simulated
 if ($cleanup.Status -ne 'ERROR' -or $cleanup.Detail -notmatch 'evidence\.bin' -or $cleanup.Detail -notmatch 'retained') { throw 'Cleanup failure did not retain the evidence path.' }
 $count += 13
 
+$manifestFixture = 'C:\fixture-guid'
+$manifestProtected = Join-Path $manifestFixture 'app'
+$manifestData = Join-Path $manifestFixture 'data'
+$manifestImage = Join-Path $manifestProtected 'Ycsz.exe'
+$manifestSample = Join-Path $manifestProtected 'sample.bin'
+$manifestSampleEntry = [pscustomobject]@{ Path=$manifestSample; Length=4; VolumeSerial=10; FileIndex=20; NumberOfLinks=1 }
+$manifest = [pscustomobject]@{
+    FixtureId=([guid]::NewGuid()).ToString(); FixtureRoot=$manifestFixture; ProtectedRoot=$manifestProtected
+    ProtectedDataRoot=$manifestData; ServiceImagePath=$manifestImage; ServiceName='YcszFirewall'
+    ProtectedFiles=@($manifestSampleEntry)
+}
+Assert-ProtectionFixtureManifest $manifest $manifestFixture $manifestProtected $manifestData $manifestImage | Out-Null
+$count++
+foreach ($field in @('FixtureRoot','ProtectedRoot','ProtectedDataRoot','ServiceImagePath')) {
+    $badManifest = $manifest | Select-Object *
+    $badManifest.$field = 'C:\not-the-requested-path'
+    Must-Reject ('manifest metadata mismatch ' + $field) { Assert-ProtectionFixtureManifest $badManifest $manifestFixture $manifestProtected $manifestData $manifestImage }
+}
+
 $dynamic = Get-Content (Join-Path $PSScriptRoot 'Test-ProtectionDriver.ps1') -Raw
+$shared = Get-Content (Join-Path $PSScriptRoot 'Protection-Validation.ps1') -Raw
 foreach ($needle in @(
     'Resolve-ProtectionDynamicException',
     'Test-ProtectionExpectedUnloadRejection',
     'pre-active existing handle',
     'pre-active writable mapping',
     'ordinary writable mapping',
-    'Add-DynamicCleanupError'
+    'Add-DynamicCleanupError',
+    'FixtureManifestPath',
+    'New-ProtectionFixtureScope',
+    'Get-ProtectionFixtureHandleEntity',
+    'New-ProtectionFixtureHardLink',
+    'New-DynamicJunctionOwned',
+    'Invoke-DynamicOwnedCleanup',
+    'Win32_Service',
+    'TrustedImagePath',
+    'TrustedDataRoot'
 )) {
     if ($dynamic -notmatch [regex]::Escape($needle)) { throw "Dynamic evidence regression guard missing: $needle" }
 }
+foreach ($needle in @(
+    'GetFileInformationByHandle',
+    '0x02000000 -bor 0x00200000',
+    'CreateHardLink',
+    'CreateNew',
+    'Remove-ProtectionFixtureOwnedPath'
+)) {
+    if ($shared -notmatch [regex]::Escape($needle)) { throw "Fixture boundary helper guard missing: $needle" }
+}
 if ($dynamic -match 'MapViewOfFile\([^\r\n]*0x0002\s*-bor\s*0x0020') { throw 'Writable mapping still requests execute access.' }
 if ($dynamic -match 'catch\s*\{\s*Add-Result[^\r\n]*\x27PASS\x27') { throw 'Dynamic exception catch still unconditionally records PASS.' }
+if ($dynamic -match 'WriteAllText') { throw 'Dynamic fixture controls still overwrite files with WriteAllText.' }
+if ($dynamic -match 'Remove-Item[^\r\n]*-Recurse') { throw 'Dynamic cleanup still recursively deletes an unknown path.' }
 $count += 2
 Write-Output "PASS $count pure protection install/remove and dynamic evidence classification checks; no service, driver or system configuration changed."

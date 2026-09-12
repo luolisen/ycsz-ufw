@@ -68,6 +68,9 @@ jobs:
       - name: Protection maintenance input validation
         shell: powershell
         run: ./scripts/Test-ProtectionValidation.ps1 | Tee-Object artifacts/protection-validation-results-windows.txt
+      - name: Disposable fixture boundary integration
+        shell: powershell
+        run: ./scripts/Test-ProtectionFixtureBoundary.ps1 | Tee-Object artifacts/protection-fixture-boundary-results-windows.txt
       - name: Runtime prerequisite state transitions
         shell: powershell
         run: ./scripts/Test-Net48.ps1 | Tee-Object artifacts/net48-results-windows.txt

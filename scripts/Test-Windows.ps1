@@ -90,7 +90,7 @@ if ($Mode -eq 'Static') {
         $packages=Get-Content (Join-Path $repo 'packages.config') -Raw
         if ($props -notmatch '10\.0\.28000\.2526' -or $packages -notmatch 'Microsoft\.Windows\.WDK\.x64') { throw 'Pinned WDK NuGet inputs missing' }
         $workflow=Get-Content (Join-Path $repo '.github\workflows\windows-build.yml') -Raw
-        if ($workflow -notmatch 'windows-2025-vs2026' -or $workflow -notmatch 'InfVerif' -or $workflow -notmatch 'Test-ProtectionDriver') { throw 'Windows driver CI gates missing' }
+        if ($workflow -notmatch 'windows-2025-vs2026' -or $workflow -notmatch 'InfVerif' -or $workflow -notmatch 'Test-ProtectionDriver' -or $workflow -notmatch 'Test-ProtectionFixtureBoundary') { throw 'Windows driver/fixture CI gates missing' }
     }
 } else {
     # Read-only installed checks. Never alter network, proxy, service or WFP state.

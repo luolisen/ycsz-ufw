@@ -7,6 +7,327 @@ function Assert-ProtectionFixtureChild([string]$Fixture,[string]$Candidate) {
     }
 }
 
+function Add-ProtectionFixtureNativeType {
+    if ('YcszFixtureBoundaryNative' -as [type]) { return }
+    Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+public static class YcszFixtureBoundaryNative {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ByHandleFileInformation {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool GetFileInformationByHandle(SafeFileHandle file, out ByHandleFileInformation info);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern bool CreateDirectory(string path, IntPtr security);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern bool CreateHardLink(string link, string existing, IntPtr security);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern uint QueryDosDevice(string device, StringBuilder target, uint max);
+}
+'@
+}
+
+function Get-ProtectionFixtureWin32Exception([int]$Code,[string]$Message) {
+    if ($Code -le 0) { return New-Object System.InvalidOperationException($Message) }
+    return New-Object System.ComponentModel.Win32Exception($Code,$Message)
+}
+
+function Get-ProtectionFixturePathComponents([string]$Path) {
+    $full = [IO.Path]::GetFullPath($Path)
+    if ($full -notmatch '^[A-Za-z]:\\') { throw "Dynamic fixture paths must use a local drive: $full" }
+    $root = [IO.Path]::GetPathRoot($full)
+    $components = New-Object 'System.Collections.Generic.List[string]'
+    [void]$components.Add($root)
+    $rest = $full.Substring($root.Length).Trim('\')
+    if (![string]::IsNullOrWhiteSpace($rest)) {
+        $current = $root.TrimEnd('\')
+        foreach ($part in $rest.Split('\',[StringSplitOptions]::RemoveEmptyEntries)) {
+            $current = Join-Path $current $part
+            [void]$components.Add($current)
+        }
+    }
+    return $components.ToArray()
+}
+
+function Get-ProtectionFixtureEntity([string]$Path,[uint32]$Share=3) {
+    Add-ProtectionFixtureNativeType
+    $full = [IO.Path]::GetFullPath($Path)
+    $flags = 0x02000000 -bor 0x00200000
+    $handle = [YcszFixtureBoundaryNative]::CreateFile($full,0x00000080,$Share,[IntPtr]::Zero,3,$flags,[IntPtr]::Zero)
+    $openError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    if ($null -eq $handle -or $handle.IsInvalid) {
+        if ($null -ne $handle) { $handle.Dispose() }
+        throw (Get-ProtectionFixtureWin32Exception $openError ("Could not open fixture entity: " + $full))
+    }
+    $info = New-Object YcszFixtureBoundaryNative+ByHandleFileInformation
+    $read = [YcszFixtureBoundaryNative]::GetFileInformationByHandle($handle,[ref]$info)
+    $readError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    if (!$read) {
+        $handle.Dispose()
+        throw (Get-ProtectionFixtureWin32Exception $readError ("Could not query fixture entity: " + $full))
+    }
+    $fileIndex = ([uint64]$info.FileIndexHigh -shl 32) -bor [uint64]$info.FileIndexLow
+    $length = ([uint64]$info.FileSizeHigh -shl 32) -bor [uint64]$info.FileSizeLow
+    return [pscustomobject]@{
+        Path=$full; Handle=$handle; Attributes=[uint32]$info.FileAttributes
+        VolumeSerial=[uint32]$info.VolumeSerialNumber; FileIndex=$fileIndex
+        NumberOfLinks=[uint32]$info.NumberOfLinks; Length=$length
+        IsDirectory=(([uint32]$info.FileAttributes -band 0x10) -ne 0)
+    }
+}
+
+function Get-ProtectionFixtureHandleEntity($Handle,[string]$Path) {
+    Add-ProtectionFixtureNativeType
+    if ($null -eq $Handle -or $Handle.IsInvalid) { throw "Fixture handle is invalid: $Path" }
+    $info = New-Object YcszFixtureBoundaryNative+ByHandleFileInformation
+    $read = [YcszFixtureBoundaryNative]::GetFileInformationByHandle($Handle,[ref]$info)
+    $readError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    if (!$read) { throw (Get-ProtectionFixtureWin32Exception $readError ("Could not query fixture handle: " + $Path)) }
+    $fileIndex = ([uint64]$info.FileIndexHigh -shl 32) -bor [uint64]$info.FileIndexLow
+    $length = ([uint64]$info.FileSizeHigh -shl 32) -bor [uint64]$info.FileSizeLow
+    return [pscustomobject]@{
+        Path=[IO.Path]::GetFullPath($Path); Attributes=[uint32]$info.FileAttributes
+        VolumeSerial=[uint32]$info.VolumeSerialNumber; FileIndex=$fileIndex
+        NumberOfLinks=[uint32]$info.NumberOfLinks; Length=$length
+        IsDirectory=(([uint32]$info.FileAttributes -band 0x10) -ne 0)
+    }
+}
+
+function Close-ProtectionFixtureEntity($Entity) {
+    if ($null -ne $Entity -and $null -ne $Entity.Handle) {
+        try { $Entity.Handle.Dispose() } catch { }
+    }
+}
+
+function Assert-ProtectionFixtureEntity($Entity,[switch]$AllowMultipleLinks) {
+    if ($null -eq $Entity) { throw 'Fixture entity is missing.' }
+    if (($Entity.Attributes -band 0x400) -ne 0) { throw "Fixture entity is a reparse point: $($Entity.Path)" }
+    if (!$AllowMultipleLinks -and !$Entity.IsDirectory -and $Entity.NumberOfLinks -ne 1) {
+        throw "Fixture file has unexpected hard-link count $($Entity.NumberOfLinks): $($Entity.Path)"
+    }
+    return $Entity
+}
+
+function New-ProtectionFixtureScope([string]$FixtureRoot,[string[]]$RequiredPaths,[string[]]$AllowMissingLeafPaths,[string[]]$ReadOnlyPaths) {
+    Add-ProtectionFixtureNativeType
+    $root = [IO.Path]::GetFullPath($FixtureRoot)
+    if ($root -notmatch '^[A-Za-z]:\\' -or [IO.Path]::GetPathRoot($root).TrimEnd('\') -eq $root.TrimEnd('\')) {
+        throw "Fixture root must be a strict local-drive directory: $root"
+    }
+    $paths = New-Object 'System.Collections.Generic.List[string]'
+    [void]$paths.Add($root)
+    foreach ($path in @($RequiredPaths)) {
+        if ([string]::IsNullOrWhiteSpace($path)) { throw 'Fixture scope contains an empty required path.' }
+        Assert-ProtectionFixtureChild $root $path
+        foreach ($component in Get-ProtectionFixturePathComponents $path) { [void]$paths.Add($component) }
+    }
+    $missing = @($AllowMissingLeafPaths | ForEach-Object { [IO.Path]::GetFullPath($_) })
+    $readOnly = @($ReadOnlyPaths | ForEach-Object { [IO.Path]::GetFullPath($_) })
+    $entities = New-Object 'System.Collections.Generic.List[object]'
+    $seen = @{}
+    try {
+        foreach ($path in @($paths | Select-Object -Unique)) {
+            $isFinalMissingAllowed = $false
+            foreach ($candidate in $missing) { if ([string]::Equals($candidate,$path,[StringComparison]::OrdinalIgnoreCase)) { $isFinalMissingAllowed=$true; break } }
+            $share = 3
+            foreach ($candidate in $readOnly) { if ([string]::Equals($candidate,$path,[StringComparison]::OrdinalIgnoreCase)) { $share=1; break } }
+            $entity=$null
+            try {
+                try { $entity = Get-ProtectionFixtureEntity $path ([uint32]$share) }
+                catch {
+                    $code = Get-ProtectionNativeErrorCode $_
+                    if ($isFinalMissingAllowed -and ($code -eq 2 -or $code -eq 3)) { continue }
+                    throw
+                }
+                Assert-ProtectionFixtureEntity $entity | Out-Null
+                if ([string]::Equals($entity.Path,$root,[StringComparison]::OrdinalIgnoreCase) -and !$entity.IsDirectory) { throw "Fixture root is not a directory: $root" }
+                $seen[$entity.Path.ToLowerInvariant()]=$true
+                [void]$entities.Add($entity)
+                $entity=$null
+            } finally {
+                if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity }
+            }
+        }
+        return [pscustomobject]@{ FixtureRoot=$root; Entities=$entities.ToArray(); Paths=$seen.Keys }
+    } catch {
+        foreach ($entity in $entities) { Close-ProtectionFixtureEntity $entity }
+        throw
+    }
+}
+
+function Close-ProtectionFixtureScope($Scope) {
+    if ($null -eq $Scope -or $null -eq $Scope.Entities) { return }
+    foreach ($entity in @($Scope.Entities | Sort-Object -Property Path -Descending)) { Close-ProtectionFixtureEntity $entity }
+}
+
+function Test-ProtectionFixturePathEquals([string]$First,[string]$Second) {
+    return [string]::Equals([IO.Path]::GetFullPath($First).TrimEnd('\'),[IO.Path]::GetFullPath($Second).TrimEnd('\'),[StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-ProtectionFixtureManifest($Manifest,[string]$FixtureRoot,[string]$ProtectedRoot,[string]$ProtectedDataRoot,[string]$ServiceImagePath) {
+    if ($null -eq $Manifest -or [string]::IsNullOrWhiteSpace([string]$Manifest.FixtureId)) { throw 'Fixture manifest is missing FixtureId.' }
+    $id=[guid]::Empty
+    if (![guid]::TryParse([string]$Manifest.FixtureId,[ref]$id) -or $id -eq [guid]::Empty) { throw 'Fixture manifest FixtureId is invalid.' }
+    foreach ($pair in @(
+        @('FixtureRoot',$Manifest.FixtureRoot,$FixtureRoot),
+        @('ProtectedRoot',$Manifest.ProtectedRoot,$ProtectedRoot),
+        @('ProtectedDataRoot',$Manifest.ProtectedDataRoot,$ProtectedDataRoot),
+        @('ServiceImagePath',$Manifest.ServiceImagePath,$ServiceImagePath)
+    )) {
+        if ([string]::IsNullOrWhiteSpace([string]$pair[1]) -or ![string]::Equals([IO.Path]::GetFullPath([string]$pair[1]).TrimEnd('\'),[IO.Path]::GetFullPath([string]$pair[2]).TrimEnd('\'),[StringComparison]::OrdinalIgnoreCase)) {
+            throw "Fixture manifest $($pair[0]) does not match the requested path."
+        }
+    }
+    if ([string]$Manifest.ServiceName -ne 'YcszFirewall') { throw 'Fixture manifest service name is not YcszFirewall.' }
+    Assert-ProtectionFixtureChild $FixtureRoot $ProtectedRoot
+    Assert-ProtectionFixtureChild $FixtureRoot $ProtectedDataRoot
+    Assert-ProtectionFixtureChild $FixtureRoot $ServiceImagePath
+    $files=@($Manifest.ProtectedFiles)
+    if ($files.Count -eq 0) { throw 'Fixture manifest has no protected sample files.' }
+    $seen=@{}
+    foreach ($file in $files) {
+        if ([string]::IsNullOrWhiteSpace([string]$file.Path) -or $seen.ContainsKey(([IO.Path]::GetFullPath([string]$file.Path)).ToLowerInvariant())) { throw 'Fixture manifest has a missing or duplicate protected file.' }
+        $path=[IO.Path]::GetFullPath([string]$file.Path)
+        Assert-ProtectionFixtureChild $FixtureRoot $path
+        foreach ($field in @('Length','NumberOfLinks','VolumeSerial','FileIndex')) {
+            if ($file.PSObject.Properties.Name -notcontains $field) { throw "Fixture manifest protected file metadata is incomplete: $path" }
+        }
+        $length=[uint64]0; $links=[uint64]0; $volume=[uint64]0; $index=[uint64]0
+        if (![uint64]::TryParse([string]$file.Length,[ref]$length) -or
+            ![uint64]::TryParse([string]$file.NumberOfLinks,[ref]$links) -or
+            ![uint64]::TryParse([string]$file.VolumeSerial,[ref]$volume) -or
+            ![uint64]::TryParse([string]$file.FileIndex,[ref]$index)) {
+            throw "Fixture manifest protected file metadata is not numeric: $path"
+        }
+        if ($links -ne 1) { throw "Fixture manifest protected file link count is invalid: $path" }
+        if ($index -eq 0 -or $volume -eq 0) { throw "Fixture manifest protected file identity is invalid: $path" }
+        $seen[$path.ToLowerInvariant()]=$true
+    }
+    return $files
+}
+
+function ConvertTo-ProtectionFixtureNtPath([string]$Path) {
+    Add-ProtectionFixtureNativeType
+    $full=[IO.Path]::GetFullPath($Path)
+    if ($full -notmatch '^[A-Za-z]:\\') { throw "Fixture path must use a local drive: $full" }
+    $drive=$full.Substring(0,2)
+    $buffer=New-Object Text.StringBuilder 1024
+    $length=[YcszFixtureBoundaryNative]::QueryDosDevice($drive,$buffer,[uint32]$buffer.Capacity)
+    $error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    if ($length -eq 0) { throw (Get-ProtectionFixtureWin32Exception $error ("QueryDosDevice failed for $drive")) }
+    return $buffer.ToString() + $full.Substring(2)
+}
+
+function New-ProtectionFixtureDirectory([string]$Path) {
+    Add-ProtectionFixtureNativeType
+    $full=[IO.Path]::GetFullPath($Path)
+    $created=[YcszFixtureBoundaryNative]::CreateDirectory($full,[IntPtr]::Zero)
+    $error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    if (!$created) { throw (Get-ProtectionFixtureWin32Exception $error ("Fixture directory was not created: " + $full)) }
+    $entity=$null
+    try {
+        $entity=Assert-ProtectionFixtureEntity (Get-ProtectionFixtureEntity $full)
+        if (!$entity.IsDirectory) { throw "Created fixture path is not a directory: $full" }
+        return [pscustomobject]@{ Path=$full; Kind='Directory'; VolumeSerial=$entity.VolumeSerial; FileIndex=$entity.FileIndex; Attributes=$entity.Attributes; NumberOfLinks=$entity.NumberOfLinks }
+    } catch {
+        if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity; $entity=$null }
+        try { Remove-Item -LiteralPath $full -Force -ErrorAction Stop } catch { }
+        throw
+    }
+    finally { if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity } }
+}
+
+function New-ProtectionFixtureFile([string]$Path,[byte[]]$Bytes) {
+    $full=[IO.Path]::GetFullPath($Path)
+    $stream=$null
+    $created=$false
+    try {
+        $stream=New-Object IO.FileStream($full,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
+        $created=$true
+        if ($null -ne $Bytes -and $Bytes.Length -gt 0) { $stream.Write($Bytes,0,$Bytes.Length); $stream.Flush($true) }
+    } catch {
+        if ($null -ne $stream) { try { $stream.Dispose() } catch { } }
+        if ($created) { try { Remove-Item -LiteralPath $full -Force -ErrorAction Stop } catch { } }
+        throw
+    } finally { if ($null -ne $stream) { try { $stream.Dispose() } catch { } } }
+    $entity=$null
+    try {
+        $entity=Assert-ProtectionFixtureEntity (Get-ProtectionFixtureEntity $full)
+        if ($entity.IsDirectory) { throw "Created fixture path is a directory: $full" }
+        return [pscustomobject]@{ Path=$full; Kind='File'; VolumeSerial=$entity.VolumeSerial; FileIndex=$entity.FileIndex; Attributes=$entity.Attributes; NumberOfLinks=$entity.NumberOfLinks; Length=$entity.Length }
+    } catch {
+        if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity; $entity=$null }
+        try { Remove-Item -LiteralPath $full -Force -ErrorAction Stop } catch { }
+        throw
+    } finally { if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity } }
+}
+
+function New-ProtectionFixtureHardLink([string]$Path,[string]$Target) {
+    Add-ProtectionFixtureNativeType
+    $full=[IO.Path]::GetFullPath($Path); $targetFull=[IO.Path]::GetFullPath($Target)
+    $created=[YcszFixtureBoundaryNative]::CreateHardLink($full,$targetFull,[IntPtr]::Zero)
+    $error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    if (!$created) { throw (Get-ProtectionFixtureWin32Exception $error ("Fixture hard link was not created: " + $full)) }
+    $entity=$null
+    try {
+        $entity=Assert-ProtectionFixtureEntity (Get-ProtectionFixtureEntity $full) -AllowMultipleLinks
+        if ($entity.IsDirectory -or $entity.NumberOfLinks -lt 2) { throw "Fixture hard link identity was not confirmed: $full" }
+        return [pscustomobject]@{ Path=$full; Kind='HardLink'; VolumeSerial=$entity.VolumeSerial; FileIndex=$entity.FileIndex; Attributes=$entity.Attributes; NumberOfLinks=$entity.NumberOfLinks; Length=$entity.Length }
+    } catch {
+        if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity; $entity=$null }
+        try { Remove-Item -LiteralPath $full -Force -ErrorAction Stop } catch { }
+        throw
+    } finally { if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity } }
+}
+
+function Test-ProtectionFixtureOwnedIdentity($Owned) {
+    try { $entity=Get-ProtectionFixtureEntity $Owned.Path }
+    catch {
+        $code=Get-ProtectionNativeErrorCode $_
+        if ($code -eq 2 -or $code -eq 3) { return [pscustomobject]@{ Status='PASS'; Exists=$false; Detail='Owned path is already absent.' } }
+        return [pscustomobject]@{ Status='ERROR'; Exists=$true; Detail=('Could not re-open owned path; identity was not confirmed: ' + $_.Exception.Message) }
+    }
+    try {
+        $kindMatches=if ($Owned.Kind -eq 'Directory') { $entity.IsDirectory -and (($entity.Attributes -band 0x400) -eq 0) } elseif ($Owned.Kind -eq 'Junction') { $entity.IsDirectory -and (($entity.Attributes -band 0x400) -ne 0) } else { !$entity.IsDirectory -and (($entity.Attributes -band 0x400) -eq 0) }
+        $identityMatches=$kindMatches -and $entity.VolumeSerial -eq $Owned.VolumeSerial -and $entity.FileIndex -eq $Owned.FileIndex
+        if ($Owned.Kind -eq 'File' -and $entity.NumberOfLinks -ne 1) { $identityMatches=$false }
+        if (!$identityMatches) { return [pscustomobject]@{ Status='ERROR'; Exists=$true; Detail='Owned path identity changed; evidence path is retained.' } }
+        return [pscustomobject]@{ Status='PASS'; Exists=$true; Entity=$entity; Detail='Owned path identity matches.' }
+    } finally { if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity } }
+}
+
+function Remove-ProtectionFixtureOwnedPath($Owned) {
+    $check=Test-ProtectionFixtureOwnedIdentity $Owned
+    if ($check.Status -ne 'PASS') { return $check }
+    if (!$check.Exists) { return [pscustomobject]@{ Status='PASS'; Exists=$false; Detail='Owned path was already absent.' } }
+    try {
+        if ($Owned.Kind -eq 'Directory' -and @([IO.Directory]::GetFileSystemEntries($Owned.Path)).Count -ne 0) {
+            return [pscustomobject]@{ Status='ERROR'; Exists=$true; Detail='Owned directory is not empty; evidence path is retained.' }
+        }
+        Remove-Item -LiteralPath $Owned.Path -Force -ErrorAction Stop
+        $after=Test-ProtectionFixtureOwnedIdentity $Owned
+        if ($after.Exists) { return [pscustomobject]@{ Status='ERROR'; Exists=$true; Detail='Owned path remained after cleanup; evidence path is retained.' } }
+        return [pscustomobject]@{ Status='PASS'; Exists=$false; Detail='Owned path was removed.' }
+    } catch {
+        return [pscustomobject]@{ Status='ERROR'; Exists=$true; Detail=('Cleanup failed for ' + $Owned.Path + '; evidence path is retained: ' + $_.Exception.Message) }
+    }
+}
+
 function Assert-ProtectionServiceCommand([string]$Command,[string]$Image) {
     $suffix = '" --service'
     if (!$Command -or !$Image -or !$Command.StartsWith('"') -or !$Command.EndsWith($suffix,[StringComparison]::Ordinal)) {
