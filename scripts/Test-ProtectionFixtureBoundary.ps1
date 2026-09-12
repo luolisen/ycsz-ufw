@@ -36,7 +36,7 @@ function Get-ByteFingerprint([string]$Path) {
 function New-TestJunction([string]$Path,[string]$Target) {
     $full = [IO.Path]::GetFullPath($Path)
     $targetFull = [IO.Path]::GetFullPath($Target)
-    New-Item -ItemType Junction -LiteralPath $full -Target $targetFull -ErrorAction Stop | Out-Null
+    New-Item -ItemType Junction -Path $full -Target $targetFull -ErrorAction Stop | Out-Null
     $entity = $null
     try {
         $entity = Get-ProtectionFixtureEntity $full

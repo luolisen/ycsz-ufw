@@ -183,7 +183,7 @@ function Invoke-DynamicOwnedCleanup([object]$Context) {
 
 function New-DynamicJunctionOwned([string]$Path,[string]$Target) {
     $full=[IO.Path]::GetFullPath($Path)
-    New-Item -ItemType Junction -LiteralPath $full -Target ([IO.Path]::GetFullPath($Target)) -ErrorAction Stop | Out-Null
+    New-Item -ItemType Junction -Path $full -Target ([IO.Path]::GetFullPath($Target)) -ErrorAction Stop | Out-Null
     $entity=$null
     try {
         $entity=Get-ProtectionFixtureEntity $full
