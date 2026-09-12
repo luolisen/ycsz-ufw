@@ -90,6 +90,7 @@ ${EndIf}
     & "$fixture\SecurityProbe.exe" --checks
     NativeCheck 'Windows standard-user and TLS registration checks'
     # Only this newly-created, known-path manager fixture is terminated.
+    $service = Get-CimInstance Win32_Service -Filter "Name='YcszFirewall'"
     $before = $service.ProcessId
     Stop-Process -Id $before -Force
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
