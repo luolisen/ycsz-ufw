@@ -191,7 +191,7 @@ function New-DynamicJunctionOwned([string]$Path,[string]$Target) {
         return [pscustomobject]@{ Path=$full; Kind='Junction'; VolumeSerial=$entity.VolumeSerial; FileIndex=$entity.FileIndex; Attributes=$entity.Attributes; NumberOfLinks=$entity.NumberOfLinks }
     } catch {
         if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity; $entity=$null }
-        try { Remove-Item -LiteralPath $full -Force -ErrorAction Stop } catch { }
+        try { Add-ProtectionFixtureNativeType; [void]([YcszFixtureBoundaryNative]::RemoveDirectory($full)) } catch { }
         throw
     } finally { if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity } }
 }

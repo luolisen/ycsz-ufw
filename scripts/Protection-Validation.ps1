@@ -35,6 +35,8 @@ public static class YcszFixtureBoundaryNative {
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
     public static extern bool CreateDirectory(string path, IntPtr security);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern bool RemoveDirectory(string path);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
     public static extern bool CreateHardLink(string link, string existing, IntPtr security);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
     public static extern uint QueryDosDevice(string device, StringBuilder target, uint max);
@@ -246,7 +248,7 @@ function New-ProtectionFixtureDirectory([string]$Path) {
         return [pscustomobject]@{ Path=$full; Kind='Directory'; VolumeSerial=$entity.VolumeSerial; FileIndex=$entity.FileIndex; Attributes=$entity.Attributes; NumberOfLinks=$entity.NumberOfLinks }
     } catch {
         if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity; $entity=$null }
-        try { Remove-Item -LiteralPath $full -Force -ErrorAction Stop } catch { }
+        try { Add-ProtectionFixtureNativeType; [void]([YcszFixtureBoundaryNative]::RemoveDirectory($full)) } catch { }
         throw
     }
     finally { if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity } }
@@ -319,7 +321,14 @@ function Remove-ProtectionFixtureOwnedPath($Owned) {
         if ($Owned.Kind -eq 'Directory' -and @([IO.Directory]::GetFileSystemEntries($Owned.Path)).Count -ne 0) {
             return [pscustomobject]@{ Status='ERROR'; Exists=$true; Detail='Owned directory is not empty; evidence path is retained.' }
         }
-        Remove-Item -LiteralPath $Owned.Path -Force -ErrorAction Stop
+        if ($Owned.Kind -eq 'Directory' -or $Owned.Kind -eq 'Junction') {
+            Add-ProtectionFixtureNativeType
+            $removed=[YcszFixtureBoundaryNative]::RemoveDirectory($Owned.Path)
+            $error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            if (!$removed) { throw (Get-ProtectionFixtureWin32Exception $error ('Native directory cleanup failed: ' + $Owned.Path)) }
+        } else {
+            Remove-Item -LiteralPath $Owned.Path -Force -ErrorAction Stop
+        }
         $after=Test-ProtectionFixtureOwnedIdentity $Owned
         if ($after.Exists) { return [pscustomobject]@{ Status='ERROR'; Exists=$true; Detail='Owned path remained after cleanup; evidence path is retained.' } }
         return [pscustomobject]@{ Status='PASS'; Exists=$false; Detail='Owned path was removed.' }

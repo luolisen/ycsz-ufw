@@ -47,7 +47,7 @@ function New-TestJunction([string]$Path,[string]$Target) {
         }
     } catch {
         if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity; $entity=$null }
-        try { Remove-Item -LiteralPath $full -Force -ErrorAction Stop } catch { }
+        try { Add-ProtectionFixtureNativeType; [void]([YcszFixtureBoundaryNative]::RemoveDirectory($full)) } catch { }
         throw
     } finally {
         if ($null -ne $entity) { Close-ProtectionFixtureEntity $entity }
