@@ -7,6 +7,14 @@ function Must-Reject([scriptblock]$Action) {
     if (!$rejected) { throw 'Unsafe input was accepted.' }
     $script:count++
 }
+Assert-ProtectionFixtureChild 'C:\fixture[1]' 'c:\fixture[1]\app\Ycsz.exe'
+Assert-ProtectionFixtureChild 'C:\fixture\' 'C:\fixture\app'
+$count += 2
+Must-Reject { Assert-ProtectionFixtureChild 'C:\fixture[1]' 'C:\fixture1\app' }
+Must-Reject { Assert-ProtectionFixtureChild 'C:\fixture' 'C:\fixture-other\app' }
+Must-Reject { Assert-ProtectionFixtureChild 'C:\fixture' 'C:\fixture' }
+Must-Reject { Assert-ProtectionFixtureChild 'C:\fixture' 'C:\fixture\..\outside' }
+Must-Reject { Assert-ProtectionFixtureChild 'C:\fixture' 'D:\fixture\app' }
 $image = 'C:\Program Files\YcszFirewall\Ycsz.exe'
 Assert-ProtectionServiceCommand ('"' + $image + '" --service') $image
 Assert-ProtectionServiceCommand ('"' + $image.ToUpperInvariant() + '" --service') $image

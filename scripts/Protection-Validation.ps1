@@ -1,4 +1,12 @@
 # Pure validation shared by the maintenance scripts and isolated tests.
+function Assert-ProtectionFixtureChild([string]$Fixture,[string]$Candidate) {
+    $root = [IO.Path]::GetFullPath($Fixture).TrimEnd('\')
+    $path = [IO.Path]::GetFullPath($Candidate)
+    if (!$path.StartsWith($root + '\',[StringComparison]::OrdinalIgnoreCase)) {
+        throw "Dynamic path must be strictly inside the disposable fixture: $path"
+    }
+}
+
 function Assert-ProtectionServiceCommand([string]$Command,[string]$Image) {
     $suffix = '" --service'
     if (!$Command -or !$Image -or !$Command.StartsWith('"') -or !$Command.EndsWith($suffix,[StringComparison]::Ordinal)) {

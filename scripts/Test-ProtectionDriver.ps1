@@ -244,8 +244,8 @@ function Require-DynamicPreconditions {
         throw 'Dynamic mode requires FixtureRoot, ProtectedRoot, ProtectedDataRoot and ServiceImagePath.'
     }
     $fixture = [IO.Path]::GetFullPath($FixtureRoot)
-    foreach ($root in @($fixture,[IO.Path]::GetFullPath($ProtectedRoot),[IO.Path]::GetFullPath($ProtectedDataRoot))) {
-        if ($root -notlike ($fixture.TrimEnd('\') + '\*') -and $root -ne $fixture) { throw "Dynamic root is outside the disposable fixture: $root" }
+    foreach ($root in @($ProtectedRoot,$ProtectedDataRoot)) {
+        Assert-ProtectionFixtureChild $fixture $root
     }
     $marker = Join-Path $fixture '.ycsz-dynamic-fixture'
     if (!(Test-Path -LiteralPath $marker -PathType Leaf)) { throw "Missing disposable fixture marker: $marker" }
@@ -255,7 +255,7 @@ function Require-DynamicPreconditions {
     if (!$app -or $app.Status -ne 'Running') { throw 'YcszFirewall must already be running in the disposable harness.' }
     if (!(Test-Path -LiteralPath $ServiceImagePath -PathType Leaf)) { throw "ServiceImagePath does not exist: $ServiceImagePath" }
     $image = [IO.Path]::GetFullPath($ServiceImagePath)
-    if ($image -notlike ($fixture.TrimEnd('\') + '\*')) { throw 'ServiceImagePath is outside the disposable fixture.' }
+    Assert-ProtectionFixtureChild $fixture $image
     $probe = & $image --protection-status 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) { throw "The harness is Running but v4 activation was not confirmed: $probe" }
 }
