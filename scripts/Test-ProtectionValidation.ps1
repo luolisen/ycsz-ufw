@@ -176,7 +176,7 @@ $count++
 foreach ($field in @('FixtureRoot','ProtectedRoot','ProtectedDataRoot','ServiceImagePath')) {
     $badManifest = $manifest | Select-Object *
     $badManifest.$field = 'C:\not-the-requested-path'
-    Must-Reject ('manifest metadata mismatch ' + $field) { Assert-ProtectionFixtureManifest $badManifest $manifestFixture $manifestProtected $manifestData $manifestImage }
+    Must-Reject { Assert-ProtectionFixtureManifest $badManifest $manifestFixture $manifestProtected $manifestData $manifestImage }
 }
 
 $dynamic = Get-Content (Join-Path $PSScriptRoot 'Test-ProtectionDriver.ps1') -Raw
