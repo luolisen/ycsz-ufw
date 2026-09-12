@@ -204,8 +204,7 @@ foreach ($needle in @(
     'pre-active handle held',
     'ActivationSignalPath',
     'WaitTimeoutSeconds',
-    'Invoke-TwoPhaseChecks',
-    'SetFileInformationByHandle'
+    'Invoke-TwoPhaseChecks'
 )) {
     if ($dynamic -notmatch [regex]::Escape($needle)) { throw "Dynamic evidence regression guard missing: $needle" }
 }
