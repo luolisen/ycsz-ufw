@@ -135,3 +135,86 @@ function Assert-ProtectionRollbackStopped($ApplicationService,$DriverService) {
         }
     }
 }
+
+function Get-ProtectionNativeErrorCode($ErrorRecord) {
+    $exception = $null
+    if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) {
+        $exception = $ErrorRecord.Exception
+    } elseif ($ErrorRecord -is [System.Exception]) {
+        $exception = $ErrorRecord
+    }
+    while ($null -ne $exception) {
+        if ($exception -is [System.ComponentModel.Win32Exception]) {
+            return [int]$exception.NativeErrorCode
+        }
+        $nativeProperty = $exception.PSObject.Properties['NativeErrorCode']
+        if ($null -ne $nativeProperty) {
+            try { return [int]$nativeProperty.Value } catch { }
+        }
+        $hresult = [uint32]$exception.HResult
+        if (($hresult -band [uint32]0xFFFF0000) -eq [uint32]0x80070000) {
+            return [int]($hresult -band [uint32]0x0000FFFF)
+        }
+        $exception = $exception.InnerException
+    }
+    return $null
+}
+
+function Get-ProtectionWin32ErrorLabel([int]$Code) {
+    $hex = ('0x{0:X8}' -f ([uint32]$Code))
+    switch ($Code) {
+        2 { return "ERROR_FILE_NOT_FOUND ($Code/$hex)" }
+        5 { return "ERROR_ACCESS_DENIED ($Code/$hex)" }
+        32 { return "ERROR_SHARING_VIOLATION ($Code/$hex)" }
+        50 { return "ERROR_NOT_SUPPORTED ($Code/$hex)" }
+        87 { return "ERROR_INVALID_PARAMETER ($Code/$hex)" }
+        120 { return "ERROR_CALL_NOT_IMPLEMENTED ($Code/$hex)" }
+        default { return "Win32 error $Code/$hex" }
+    }
+}
+
+function Resolve-ProtectionDynamicNativeFailure([int]$Code,[string]$ExpectedStage,[string]$ActualStage,[bool]$ControlSucceeded) {
+    $label = Get-ProtectionWin32ErrorLabel $Code
+    if ($Code -eq 50 -or $Code -eq 120) {
+        return [pscustomobject]@{ Status='BLOCKED'; Detail=("The platform or filesystem does not support {0}: {1}" -f $ActualStage,$label) }
+    }
+    if (!$ControlSucceeded) {
+        return [pscustomobject]@{ Status='ERROR'; Detail=("Control precondition failed before {0}: {1}" -f $ActualStage,$label) }
+    }
+    if ($ExpectedStage -ne $ActualStage) {
+        return [pscustomobject]@{ Status='ERROR'; Detail=("Native error was captured at unexpected stage {0}; expected {1}: {2}" -f $ActualStage,$ExpectedStage,$label) }
+    }
+    switch ($Code) {
+        5 { return [pscustomobject]@{ Status='PASS'; Detail=("Expected protection denial at {0}: {1}" -f $ActualStage,$label) } }
+        87 { return [pscustomobject]@{ Status='ERROR'; Detail=("The dynamic call supplied an invalid parameter at {0}: {1}" -f $ActualStage,$label) } }
+        32 { return [pscustomobject]@{ Status='ERROR'; Detail=("The fixture has a sharing conflict at {0}; this is not protection evidence: {1}" -f $ActualStage,$label) } }
+        2 { return [pscustomobject]@{ Status='ERROR'; Detail=("The fixture path is missing at {0}; this is not protection evidence: {1}" -f $ActualStage,$label) } }
+        default { return [pscustomobject]@{ Status='ERROR'; Detail=("Unexpected native error at {0}; this is not protection evidence: {1}" -f $ActualStage,$label) } }
+    }
+}
+
+function Resolve-ProtectionDynamicException($ErrorRecord,[string]$ExpectedStage,[string]$ActualStage,[bool]$ControlSucceeded) {
+    $code = Get-ProtectionNativeErrorCode $ErrorRecord
+    if ($null -eq $code) {
+        $message = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception.Message } else { [string]$ErrorRecord }
+        return [pscustomobject]@{ Status='ERROR'; Detail=("No reliable Win32 error was captured at {0}: {1}" -f $ActualStage,$message) }
+    }
+    return Resolve-ProtectionDynamicNativeFailure $code $ExpectedStage $ActualStage $ControlSucceeded
+}
+
+function Resolve-ProtectionCleanupFailure([string]$Path,[string]$Detail) {
+    return [pscustomobject]@{ Status='ERROR'; Detail=('Cleanup failed for {0}. Evidence path is retained. {1}' -f $Path,$Detail) }
+}
+
+function Test-ProtectionExpectedUnloadRejection([int]$ExitCode,[string]$Output,[bool]$FilterStillPresent) {
+    if ($ExitCode -eq 0) {
+        return [pscustomobject]@{ Status='FAIL'; Detail='fltmc unload succeeded while the control handle was open.' }
+    }
+    if (!$FilterStillPresent) {
+        return [pscustomobject]@{ Status='ERROR'; Detail='The unload command was non-zero, but the target filter could not be confirmed as still present.' }
+    }
+    if ($Output -match '(?i)STATUS_FLT_DO_NOT_DETACH|ERROR_FLT_DO_NOT_DETACH|0xC01C0010|0x801F0010') {
+        return [pscustomobject]@{ Status='PASS'; Detail='fltmc reported STATUS_FLT_DO_NOT_DETACH and the target filter remained present.' }
+    }
+    return [pscustomobject]@{ Status='ERROR'; Detail=('fltmc returned a non-zero result without the expected STATUS_FLT_DO_NOT_DETACH evidence: ' + $Output.Trim()) }
+}

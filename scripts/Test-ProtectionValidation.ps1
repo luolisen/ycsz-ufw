@@ -117,4 +117,47 @@ function Invoke-ActivationBarrierCheck {
 }
 Invoke-ActivationBarrierCheck | Out-Null
 $count++
-Write-Output "PASS $count pure protection install/remove input checks; no service, driver or system configuration changed."
+
+$accessDenied = Resolve-ProtectionDynamicNativeFailure 5 'file-write' 'file-write' $true
+if ($accessDenied.Status -ne 'PASS') { throw 'ERROR_ACCESS_DENIED was not accepted only for the matched protected write stage.' }
+$missing = Resolve-ProtectionDynamicNativeFailure 2 'file-write' 'file-write' $true
+if ($missing.Status -eq 'PASS') { throw 'Missing-file evidence was incorrectly accepted as protection.' }
+$sharing = Resolve-ProtectionDynamicNativeFailure 32 'hardlink-create' 'hardlink-create' $true
+if ($sharing.Status -eq 'PASS') { throw 'Sharing-conflict evidence was incorrectly accepted as protection.' }
+$unsupported = Resolve-ProtectionDynamicNativeFailure 50 'mapping-create' 'mapping-create' $true
+if ($unsupported.Status -ne 'BLOCKED') { throw 'Unsupported mapping was not classified as BLOCKED.' }
+$invalidParameter = Resolve-ProtectionDynamicNativeFailure 87 'mapping-view' 'mapping-view' $true
+if ($invalidParameter.Status -ne 'ERROR') { throw 'Invalid mapping parameters were not classified as ERROR.' }
+$unknown = Resolve-ProtectionDynamicNativeFailure 1234 'file-write' 'file-write' $true
+if ($unknown.Status -ne 'ERROR') { throw 'Unknown native errors were not classified as ERROR.' }
+$wrongStage = Resolve-ProtectionDynamicNativeFailure 5 'file-write' 'file-open' $true
+if ($wrongStage.Status -ne 'ERROR') { throw 'An access denial from the wrong stage was incorrectly accepted.' }
+$noControl = Resolve-ProtectionDynamicNativeFailure 5 'file-write' 'file-write' $false
+if ($noControl.Status -ne 'ERROR') { throw 'An access denial without a successful control precondition was incorrectly accepted.' }
+$win32Exception = New-Object System.ComponentModel.Win32Exception(5)
+if ((Get-ProtectionNativeErrorCode $win32Exception) -ne 5) { throw 'Win32 exception error-code extraction failed.' }
+$unloadPass = Test-ProtectionExpectedUnloadRejection 1 'Error: ERROR_FLT_DO_NOT_DETACH (0x801F0010)' $true
+if ($unloadPass.Status -ne 'PASS') { throw 'Expected filter unload refusal was not classified as PASS.' }
+$unloadUnknown = Test-ProtectionExpectedUnloadRejection 1 'Error: invalid parameter' $true
+if ($unloadUnknown.Status -eq 'PASS') { throw 'Unknown fltmc failure was incorrectly classified as PASS.' }
+$unloadSuccess = Test-ProtectionExpectedUnloadRejection 0 '' $true
+if ($unloadSuccess.Status -ne 'FAIL') { throw 'Successful fltmc unload was not classified as FAIL.' }
+$cleanup = Resolve-ProtectionCleanupFailure 'C:\fixture\evidence.bin' 'simulated cleanup failure'
+if ($cleanup.Status -ne 'ERROR' -or $cleanup.Detail -notmatch 'evidence\.bin' -or $cleanup.Detail -notmatch 'retained') { throw 'Cleanup failure did not retain the evidence path.' }
+$count += 13
+
+$dynamic = Get-Content (Join-Path $PSScriptRoot 'Test-ProtectionDriver.ps1') -Raw
+foreach ($needle in @(
+    'Resolve-ProtectionDynamicException',
+    'Test-ProtectionExpectedUnloadRejection',
+    'pre-active existing handle',
+    'pre-active writable mapping',
+    'ordinary writable mapping',
+    'Add-DynamicCleanupError'
+)) {
+    if ($dynamic -notmatch [regex]::Escape($needle)) { throw "Dynamic evidence regression guard missing: $needle" }
+}
+if ($dynamic -match 'MapViewOfFile\([^\r\n]*0x0002\s*-bor\s*0x0020') { throw 'Writable mapping still requests execute access.' }
+if ($dynamic -match 'catch\s*\{\s*Add-Result[^\r\n]*\x27PASS\x27') { throw 'Dynamic exception catch still unconditionally records PASS.' }
+$count += 2
+Write-Output "PASS $count pure protection install/remove and dynamic evidence classification checks; no service, driver or system configuration changed."
