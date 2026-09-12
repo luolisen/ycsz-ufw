@@ -70,7 +70,7 @@ static class SecurityProbe {
     static void DriverlessMaintenance() {
         var initial=Call("self-protection-status");
         Check("fixture reports supported driverless protection mode",initial.Ok && initial.Status.Contains("无驱动模式") && !initial.Status.Contains("内核自保护已启用"));
-        string session=Call("login",null).Token;
+        string session=Ipc.Call(new Packet { Op="login",Password=TestPassword }).Token;
         bool stopped=false;
         try {
             var entered=Call("self-protection-enter",session);
