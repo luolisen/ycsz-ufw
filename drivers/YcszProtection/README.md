@@ -1,6 +1,6 @@
 # YcszProtection 驱动工程
 
-状态：源码与用户态协议已加入仓库；本机没有 Windows WDK，因此尚未完成 Windows 编译、驱动签名、安装或加载验收。该目录不会被默认应用安装器打包。
+状态：源码与用户态协议已加入仓库，Windows CI 已完成 WDK Release x64 构建及 InfVerif；最近已核实的代码提交 `9b3d291` 对应 [CI 34665735872](https://github.com/luolisen/ycsz-ufw/actions/runs/34665735872)，结果成功。产物仍未签名，未完成驱动安装、加载或动态验收。该目录不会被默认应用安装器打包。
 
 ## 实现边界
 
@@ -27,7 +27,7 @@
 msbuild drivers\YcszProtection\YcszProtection.vcxproj /p:Configuration=Release /p:Platform=x64 /m
 ```
 
-工程输出应位于 `artifacts\driver\Release\`。构建成功只代表编译和包目录生成；还必须单独记录编译器、WDK、INF/CAT、签名、安装、加载、重启和隔离靶场结果。当前仓库没有这些 Windows 输出。
+工程输出应位于 `artifacts\driver\Release\`。构建成功只代表编译和包目录生成；还必须单独记录编译器、WDK、INF/CAT、签名、安装、加载、重启和隔离靶场结果。Windows CI 提供未签名的构建产物；它们不是可直接用于生产部署的正式驱动。
 
 ## 卸载与维护
 
@@ -39,11 +39,11 @@ INF 中的 minifilter altitude `385200.1234` 只是源码阶段占位值；提�
 
 驱动现在要求 Session 0、LocalSystem、启用的 `NT SERVICE\YcszFirewall` 服务 SID，以及安装阶段预置的完整 NT 映像路径同时匹配。路径来自 `Services\YcszProtection\Parameters\TrustedImagePath`（REG_SZ，以 `\Device\` 开头），在驱动加载时读取并固定；缺失或格式不合法时加载失败。IOCTL 不能设置此信任路径。
 
-**安装器尚未提供上述配置。** 正式集成必须核验服务映像与发布包、配置产品服务 SID，并在隔离 Windows 上核对 SID 常量、NT 路径、错误账户/错误映像拒绝与服务重启后的重新绑定。这里没有执行配置、安装或加载命令。管理员更改服务注册信息、替换可信文件、注册表保护与代码签名验证仍需独立解决，不能把这些条件当作完整的管理员防破坏保证。
+`scripts/Install-Protection.ps1` 已实现服务 SID、TrustedImagePath 和 TrustedDataRoot 配置及回读核验；仍须在可加载正式签名驱动的隔离 Windows 上验收 SID、NT 路径、错误账户/错误映像拒绝与服务重启后的重新绑定。这里没有执行配置、安装或加载命令。管理员更改服务注册信息、替换可信文件、注册表保护与代码签名验证仍需独立解决，不能把这些条件当作完整的管理员防破坏保证。
 
 应用在进入 ServiceBase.Run 前，根据产品驱动服务是否已注册固定 CanStop。已注册时 SCM Stop 始终不开放；通过已登录管理页进入维护后，使用“维护停止本机服务”。服务先发送回复，再核验当前租约并内部停止。不可在服务运行中临时添加驱动注册后期待其停止权限自动改变；正式安装应先停应用服务、配置驱动，再启动应用服务。未注册驱动时保留普通服务停止与现有更新流程。
 
-这些变更只经过 macOS 上的 C# 编译/回归；SCM 停服和驱动行为均尚未通过 Windows 动态测试。
+这些变更已经过本地 C# 回归和 Windows CI 构建/隔离检查；已加载驱动下的 SCM 停服和驱动行为仍未通过动态验收。
 
 便携控制生命周期检查：`python3 scripts/test-driver-control.py` 从真实 C 源码提取 CREATE/CLOSE 与卸载门禁函数进行桩测试。它验证顺序状态转换，不模拟内核线程、IRQL、I/O manager 或真实卸载；必须另外通过 WDK 和隔离 Windows 检查。
 
@@ -72,3 +72,7 @@ INF 中的 minifilter altitude `385200.1234` 只是源码阶段占位值；提�
 卷序列号在 minifilter `InstanceSetupCallback` 的 PASSIVE_LEVEL 阶段缓存到 instance context，post-create 不在不确定 IRQL 下查询卷信息。`YCP_MAX_INITIALIZATION_ENTRIES` 为明确资源上限；Abort、超时、服务退出和卸载释放覆盖表。`initialization_lifecycle.c` 直接 include 驱动实际的 `ycsz_initialization_coverage.c`，覆盖重复/缺口、旧轮次、多卷相同 FileIndex、失败和上限，不再使用独立状态模型冒充生产实现。
 
 post-create 的覆盖记账另绑定 pre-create 捕获的目标 `PEPROCESS` 引用、单调初始化 generation 和 nonce；旧轮次在 Abort/超时后延迟完成，也不能向新轮次覆盖表记账。completion context 分配失败或实际身份标记失败只让当前轮次无法提交，draining/reparse/失败路径均释放引用和上下文，不把缺少上下文扩大为无关 I/O 的全局拒绝。新增便携回归直接提取生产快照/记账函数，验证旧轮拒绝、同轮去重、owner 隔离、失败和引用平衡。
+
+## 初始化超时与资源回收的实际语义
+
+初始化超时或目标进程退出后，状态查询立即按无效初始化报告，初始化限制不再生效。当前没有定时清理线程：覆盖表和目标引用在认证 Abort、下一次 Begin 替换失效初始化或驱动卸载时释放；单次表容量有上限，不能描述为到期立即释放。稳定 Active 不因初始化期限而撤销。延迟完成的回调保留各自引用直至回调清理，旧 generation/nonce 不能贡献新轮覆盖。仍需在可加载的隔离 Windows 中验证长时间挂起 I/O、取消与卸载的并发资源回收。
