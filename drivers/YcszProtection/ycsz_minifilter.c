@@ -357,7 +357,7 @@ YcpPreOperationFile(
 
     switch (Data->Iopb->MajorFunction) {
     case IRP_MJ_CREATE:
-        mutation = YcpCreateRequestsMutation(Data);
+        mutation = YcpCreateRequestsMutation(Data) || YcpCreateChangesNamespace(Data);
         break;
 
     case IRP_MJ_WRITE:
@@ -384,7 +384,10 @@ YcpPreOperationFile(
     }
     if (!mutation) return allowedStatus;
 
-    streamProtected = YcpStreamIsProtected(FltObjects);
+    // Stream contexts are not available in pre-create. Resolve the name here;
+    // the successful post-create callback attaches the stream identity.
+    streamProtected = Data->Iopb->MajorFunction != IRP_MJ_CREATE &&
+        YcpStreamIsProtected(FltObjects);
     sourceProtected = streamProtected;
 
     status = FltGetFileNameInformation(

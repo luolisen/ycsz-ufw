@@ -22,24 +22,32 @@
 #define FileRenameInformationEx 2
 #define FileLinkInformation 3
 #define FileLinkInformationEx 4
+#define FILE_DELETE_ON_CLOSE 0x1000
+#define FILE_CREATE 2
+#define FILE_OPEN_IF 3
+#define FILE_OVERWRITE_IF 5
+#define FILE_SUPERSEDE 0
+typedef unsigned long ULONG;
 typedef int BOOLEAN;
 typedef int NTSTATUS;
 typedef int FLT_PREOP_CALLBACK_STATUS;
 typedef void *PVOID;
 typedef struct { int Name; } NAME;
 typedef NAME *PFLT_FILE_NAME_INFORMATION;
-typedef struct { int MajorFunction,IrpFlags; struct { struct { int FileInformationClass; } SetFileInformation; } Parameters; } IOPB;
+typedef struct { int MajorFunction,IrpFlags; struct { struct { ULONG Options; } Create; struct { int FileInformationClass; } SetFileInformation; } Parameters; } IOPB;
 typedef struct { IOPB *Iopb; } DATA;
 typedef DATA *PFLT_CALLBACK_DATA;
 typedef void *PCFLT_RELATED_OBJECTS;
 static int active=1, initializing, mutation, trusted, product, stream, resolved=1, ancestor;
+static int streamQueries;
+static int YcpCreateChangesNamespace(PFLT_CALLBACK_DATA Data);
 static NAME name;
 static int YcpProtectionIsActive(void) { return active; }
 static int YcpProtectionIsInitializing(void) { return initializing; }
 static int YcpCreateRequestsMutation(DATA *d) { (void)d; return mutation; }
 static int YcpIsProtectedSetInformationClass(int c) { (void)c; return mutation; }
 static int YcpFileSystemControlRequestsMutation(DATA *d) { (void)d; return mutation; }
-static int YcpStreamIsProtected(void *o) { (void)o; return stream; }
+static int YcpStreamIsProtected(void *o) { (void)o; ++streamQueries; return stream; }
 static int FltGetFileNameInformation(DATA *d,int flags,NAME **out) { (void)d;(void)flags;*out=resolved?&name:NULL; return resolved?0:-1; }
 static int FltParseFileNameInformation(NAME *n) { (void)n; return 0; }
 static int YcpShouldProtectAncestor(int *n) { (void)n; return ancestor; }
@@ -47,16 +55,18 @@ static int YcpShouldProtectFile(int *n) { (void)n; return product; }
 static int YcpDestinationIsProtected(DATA *d,void *o,int *r) { (void)d;(void)o;*r=1;return 0; }
 static void FltReleaseFileNameInformation(NAME *n) { (void)n; }
 static int YcpIsTrustedWriter(DATA *d) { (void)d; return trusted; }
-static int YcpIsNamespaceMutation(DATA *d) { return d->Iopb->MajorFunction==IRP_MJ_SET_INFORMATION; }
+static int YcpIsNamespaceMutation(DATA *d) { return d->Iopb->MajorFunction==IRP_MJ_SET_INFORMATION || YcpCreateChangesNamespace(d); }
 static int YcpTrustedNamespaceMutationAllowed(DATA *d,int s,int t,int r) { (void)d;(void)s;(void)t;(void)r;return 0; }
 static int YcpDenyMutation(DATA *d) { (void)d;return FLT_PREOP_COMPLETE; }
 #include "precreate_extracted.inc"
 int main(void) {
     IOPB op={0}; DATA data={&op}; void *completion=(void *)1;
+    op.Parameters.Create.Options=1UL<<24; /* FILE_OPEN */
     op.MajorFunction=IRP_MJ_CREATE; product=1;
     assert(YcpPreOperationFile(&data,NULL,&completion)==FLT_PREOP_SUCCESS_WITH_CALLBACK && completion==NULL);
     mutation=1; trusted=1;
     assert(YcpPreOperationFile(&data,NULL,&completion)==FLT_PREOP_SUCCESS_WITH_CALLBACK);
+    assert(streamQueries==0); /* No stream-context API in pre-create. */
     trusted=0;
     assert(YcpPreOperationFile(&data,NULL,&completion)==FLT_PREOP_COMPLETE);
     product=0;
@@ -72,6 +82,17 @@ int main(void) {
     assert(YcpPreOperationFile(&data,NULL,&completion)==FLT_PREOP_COMPLETE);
     op.MajorFunction=IRP_MJ_WRITE;
     assert(YcpPreOperationFile(&data,NULL,&completion)==FLT_PREOP_SUCCESS_NO_CALLBACK);
-    puts("PASS 9 pre-operation dispatch scenarios; allowed creates request post callbacks, denied creates do not, unrelated/paging I/O preserved");
+    active=0; initializing=1; ancestor=0; product=1; mutation=0;
+    op.MajorFunction=IRP_MJ_CREATE;
+    op.Parameters.Create.Options=(ULONG)FILE_CREATE<<24;
+    /* Creating with no write access still changes the scanned namespace. */
+    assert(YcpPreOperationFile(&data,NULL,&completion)==FLT_PREOP_COMPLETE);
+    op.Parameters.Create.Options=(ULONG)FILE_OPEN_IF<<24;
+    assert(YcpPreOperationFile(&data,NULL,&completion)==FLT_PREOP_COMPLETE);
+    product=0;
+    assert(YcpPreOperationFile(&data,NULL,&completion)==FLT_PREOP_SUCCESS_WITH_CALLBACK);
+    product=1; op.Parameters.Create.Options=1UL<<24;
+    assert(YcpPreOperationFile(&data,NULL,&completion)==FLT_PREOP_SUCCESS_WITH_CALLBACK);
+    puts("PASS 13 pre-operation dispatch scenarios; namespace-only creates guarded, pre-create context access excluded, unrelated/paging I/O preserved");
     return 0;
 }

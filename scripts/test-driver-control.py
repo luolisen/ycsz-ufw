@@ -40,6 +40,9 @@ def extract_filter_boolean(name, return_type="BOOLEAN"):
     marker = '\n' + name + '('
     start = filter_source.index(marker) + 1
     opening = filter_source.index('{', start)
+    while ';' in filter_source[start:opening]:
+        start = filter_source.index(marker, start) + 1
+        opening = filter_source.index('{', start)
     depth = 1
     end = opening + 1
     while depth:
@@ -67,6 +70,7 @@ with tempfile.TemporaryDirectory(prefix='ycsz-control-test-') as tmp:
     subprocess.run([str(work / 'stream-test')], check=True)
 
     (work / 'precreate_extracted.inc').write_text(
+        extract_filter_boolean('YcpCreateChangesNamespace') +
         extract_filter_boolean('YcpPreOperationFile','FLT_PREOP_CALLBACK_STATUS'))
     shutil.copy2(driver / 'tests/precreate_dispatch.c', work)
     subprocess.run(compiler + ['-std=c11', '-Wall', '-Wextra', '-Werror',
