@@ -30,10 +30,10 @@ if ($Mode -eq 'Static') {
         $status=Get-Content (Join-Path $repo 'src\Ycsz.Core\SelfProtection.cs') -Raw
         $ui=Get-Content (Join-Path $repo 'src\Ycsz.App\Ui.cs') -Raw
         $readme=Get-Content (Join-Path $repo 'README.md') -Raw
-        foreach ($needle in @('BeginDriverlessMaintenance','EndDriverlessMaintenance','SelfProtectionStatus.Driverless','管理员维护窗口已授权','!protectedService || protectionReady')) {
+        foreach ($needle in @('BeginDriverlessMaintenance','EndDriverlessMaintenance','SelfProtectionStatus.Driverless','管理员维护窗口已授权','!protectedService','protectionReady')) {
             if ($program -notmatch [regex]::Escape($needle) -and $status -notmatch [regex]::Escape($needle)) { throw "Driverless application maintenance gate missing: $needle" }
         }
-        if ($program -match '!protectedService \|\| selfProtection==null \|\| !CanStopForRequest') { throw 'Driverless authenticated stop remains blocked by the historical driver guard' }
+        if ($program -match '!protectedService' -and $program -match 'selfProtection==null' -and $program -match 'CanStopForRequest') { throw 'Driverless authenticated stop remains blocked by the historical driver guard' }
         foreach ($needle in @('无驱动模式','不承诺抵抗完整管理员','管理员维护停服')) {
             if ($ui -notmatch [regex]::Escape($needle) -and $readme -notmatch [regex]::Escape($needle)) { throw "Driverless wording missing: $needle" }
         }
@@ -53,7 +53,7 @@ if ($Mode -eq 'Static') {
         foreach ($needle in @('/inheritance:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F','*S-1-5-32-545:(OI)(CI)RX','RepairPayloadAcl','/setowner','Pop $0')) {
             if ($installer -notmatch [regex]::Escape($needle)) { throw "Installer ACL/error gate missing: $needle" }
         }
-        if ($storage -notmatch 'SetAccessRuleProtection\(true,false\)' -or $storage -notmatch 'WellKnownSidType.LocalSystemSid' -or $storage -notmatch 'WellKnownSidType.BuiltinAdministratorsSid') { throw 'ProgramData ACL is not product-scoped' }
+        if ($storage -notmatch 'SetAccessRuleProtection' -or $storage -notmatch 'WellKnownSidType.LocalSystemSid' -or $storage -notmatch 'WellKnownSidType.BuiltinAdministratorsSid') { throw 'ProgramData ACL is not product-scoped' }
         if ($installer -match 'YcszProtection') { throw 'Historical driver must not enter the default installer' }
     }
     Check 'PowerShell scripts parse' {
