@@ -434,6 +434,7 @@ function Invoke-TwoPhaseChecks {
         try {
             $signalPath=if ([string]::IsNullOrWhiteSpace($ActivationSignalPath)) { Join-Path $context.FixtureRoot ('.ycsz-two-phase-' + $context.RunId + '.signal') } else { [IO.Path]::GetFullPath($ActivationSignalPath) }
             $statePath=if ([string]::IsNullOrWhiteSpace($TwoPhaseStatePath)) { Join-Path $context.FixtureRoot ('.ycsz-two-phase-' + $context.RunId + '.json') } else { [IO.Path]::GetFullPath($TwoPhaseStatePath) }
+            if (Test-ProtectionFixturePathEquals $signalPath $statePath) { throw 'Two-phase state path and activation signal path must be distinct fixture leaves.' }
             foreach ($path in @($signalPath,$statePath)) {
                 Assert-ProtectionFixtureChild $context.FixtureRoot $path
                 if (Test-ProtectionFixturePathEquals $path $context.FixtureRoot -or Test-ProtectionFixturePathEquals $path $context.ProtectedRoot -or Test-ProtectionFixturePathEquals $path $context.ProtectedDataRoot -or Test-ProtectionFixturePathEquals $path $context.ServiceImagePath) { throw "Two-phase state path is not a leaf inside the fixture: $path" }
