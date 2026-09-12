@@ -207,7 +207,7 @@ try {
         Add-ProtectionFixtureNativeType
         $moved=[YcszFixtureBoundaryNative]::MoveFileEx($raceReplacementSourcePath,$racePath,[uint32](0x1 -bor 0x8))
         $moveError=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        if (!$moved) { throw (Get-ProtectionFixtureWin32Exception $moveError ('Controlled replacement failed: ' + $racePath)) }
+        if (!$moved) { throw (Get-ProtectionFixtureWin32Exception $moveError ('Controlled replacement failed (' + (Get-ProtectionWin32ErrorLabel $moveError) + '): ' + $racePath)) }
         $replacementEntity=$null
         try {
             $replacementEntity=Get-ProtectionFixtureEntity $racePath
