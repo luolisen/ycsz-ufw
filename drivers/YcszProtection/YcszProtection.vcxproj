@@ -73,10 +73,12 @@
   <ItemGroup>
     <ClCompile Include="ycsz_protection.c" />
     <ClCompile Include="ycsz_minifilter.c" />
+    <ClCompile Include="ycsz_initialization_coverage.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ycsz_protection.h" />
     <ClInclude Include="ycsz_protection_protocol.h" />
+    <ClInclude Include="ycsz_initialization_coverage.h" />
   </ItemGroup>
   <ItemGroup>
     <Inf Include="YcszProtection.inf" />

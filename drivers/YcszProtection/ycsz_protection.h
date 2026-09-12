@@ -3,6 +3,7 @@
 #include <ntifs.h>
 #include <fltKernel.h>
 #include "ycsz_protection_protocol.h"
+#include "ycsz_initialization_coverage.h"
 
 #define YCP_POOL_TAG 'pCYZ'
 
@@ -31,9 +32,28 @@ YcpProtectionIsInitializing(
     VOID
     );
 
+typedef struct _YCP_INITIALIZATION_OBSERVATION_CONTEXT {
+    PEPROCESS OwnerProcess;
+    ULONGLONG Generation;
+    UCHAR InstanceNonce[16];
+} YCP_INITIALIZATION_OBSERVATION_CONTEXT, *PYCP_INITIALIZATION_OBSERVATION_CONTEXT;
+
+BOOLEAN
+YcpCaptureInitializationSnapshot(
+    _In_ PEPROCESS Requestor,
+    _Out_ PYCP_INITIALIZATION_OBSERVATION_CONTEXT Snapshot
+    );
+
+VOID
+YcpReleaseInitializationSnapshot(
+    _Inout_ PYCP_INITIALIZATION_OBSERVATION_CONTEXT Snapshot
+    );
+
 VOID
 YcpRecordInitializationStream(
-    _In_ PEPROCESS Requestor,
+    _In_ const YCP_INITIALIZATION_OBSERVATION_CONTEXT *Snapshot,
+    _In_opt_ const YCP_INITIALIZATION_FILE_IDENTITY *Identity,
+    _In_ ULONG Flags,
     _In_ BOOLEAN Marked
     );
 

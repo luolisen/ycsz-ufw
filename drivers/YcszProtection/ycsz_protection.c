@@ -33,13 +33,15 @@
 C_ASSERT(sizeof(WCHAR) == 2);
 C_ASSERT(sizeof(YCP_CONTROL_HEADER) == 16);
 C_ASSERT(sizeof(YCP_PROCESS_IDENTITY) == 1088);
-C_ASSERT(sizeof(YCP_ACTIVATE_REQUEST) == 3152);
+C_ASSERT(sizeof(YCP_ACTIVATE_REQUEST) == 3160);
 C_ASSERT(sizeof(YCP_INITIALIZE_COMMIT_REQUEST) == 40);
 C_ASSERT(sizeof(YCP_INITIALIZE_ABORT_REQUEST) == 32);
+C_ASSERT(sizeof(YCP_INITIALIZATION_FILE_IDENTITY) == 16);
+C_ASSERT(sizeof(YCP_INITIALIZATION_ENTRY_REQUEST) == 56);
 C_ASSERT(sizeof(YCP_TRAY_REQUEST) == 1104);
 C_ASSERT(sizeof(YCP_MAINTENANCE_REQUEST) == 40);
 C_ASSERT(sizeof(YCP_UNLOAD_REQUEST) == 32);
-C_ASSERT(sizeof(YCP_STATUS) == 4288);
+C_ASSERT(sizeof(YCP_STATUS) == 4296);
 
 typedef struct _YCP_RUNTIME_STATE {
     EX_PUSH_LOCK Lock;
@@ -64,9 +66,9 @@ typedef struct _YCP_RUNTIME_STATE {
     BOOLEAN FilterStarted;
     BOOLEAN Unloading;
     BOOLEAN Initializing;
-    ULONG InitializationExpectedEntries;
-    ULONG InitializationMarkedEntries;
-    ULONG InitializationFailures;
+    YCP_INITIALIZATION_COVERAGE InitializationCoverage;
+    ULONG InitializationManifestEntries;
+    ULONGLONG InitializationGeneration;
     LONGLONG InitializationExpiresAt100ns;
     ULONG OpenFileObjects;
 } YCP_RUNTIME_STATE;
@@ -365,6 +367,111 @@ YcpInitializationValidLocked(
     return now.QuadPart < g_YcpState.InitializationExpiresAt100ns;
 }
 
+BOOLEAN
+YcpCaptureInitializationSnapshot(
+    _In_ PEPROCESS Requestor,
+    _Out_ PYCP_INITIALIZATION_OBSERVATION_CONTEXT Snapshot
+    )
+{
+    BOOLEAN captured = FALSE;
+
+    if (Snapshot == NULL) return FALSE;
+    RtlZeroMemory(Snapshot, sizeof(*Snapshot));
+    if (Requestor == NULL) return FALSE;
+
+    KeEnterCriticalRegion();
+    ExAcquirePushLockShared(&g_YcpState.Lock);
+    if (YcpInitializationValidLocked() && YcpTargetMatchesLocked(Requestor)) {
+        ObReferenceObject(g_YcpState.TargetProcess);
+        Snapshot->OwnerProcess = g_YcpState.TargetProcess;
+        Snapshot->Generation = g_YcpState.InitializationGeneration;
+        RtlCopyMemory(
+            Snapshot->InstanceNonce,
+            g_YcpState.InstanceNonce,
+            sizeof(Snapshot->InstanceNonce));
+        captured = TRUE;
+    }
+    ExReleasePushLockShared(&g_YcpState.Lock);
+    KeLeaveCriticalRegion();
+    return captured;
+}
+
+VOID
+YcpReleaseInitializationSnapshot(
+    _Inout_ PYCP_INITIALIZATION_OBSERVATION_CONTEXT Snapshot
+    )
+{
+    if (Snapshot == NULL) return;
+    if (Snapshot->OwnerProcess != NULL) {
+        ObDereferenceObject(Snapshot->OwnerProcess);
+    }
+    RtlZeroMemory(Snapshot, sizeof(*Snapshot));
+}
+
+static VOID
+YcpClearInitializationCoverageLocked(
+    VOID
+    )
+{
+    if (g_YcpState.InitializationCoverage.Slots != NULL) {
+        ExFreePoolWithTag(g_YcpState.InitializationCoverage.Slots, YCP_POOL_TAG);
+    }
+    RtlZeroMemory(&g_YcpState.InitializationCoverage, sizeof(g_YcpState.InitializationCoverage));
+    g_YcpState.InitializationManifestEntries = 0;
+}
+
+static NTSTATUS
+YcpAllocateInitializationCoverage(
+    _In_ ULONG MaximumEntries,
+    _Out_ PYCP_INITIALIZATION_COVERAGE Coverage
+    )
+{
+    ULONG requiredSlots;
+    ULONG slotCount;
+    SIZE_T bytes;
+    PYCP_INITIALIZATION_COVERAGE_SLOT slots;
+
+    if (Coverage == NULL || MaximumEntries == 0 ||
+        MaximumEntries > YCP_MAX_INITIALIZATION_ENTRIES) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    requiredSlots = MaximumEntries > (MAXULONG / 2u)
+        ? MAXULONG
+        : MaximumEntries * 2u;
+    slotCount = 2u;
+    while (slotCount < requiredSlots) {
+        if (slotCount > (MAXULONG / 2u)) return STATUS_INVALID_PARAMETER;
+        slotCount <<= 1;
+    }
+    bytes = (SIZE_T)slotCount * sizeof(YCP_INITIALIZATION_COVERAGE_SLOT);
+    slots = (PYCP_INITIALIZATION_COVERAGE_SLOT)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED,
+        bytes,
+        YCP_POOL_TAG);
+    if (slots == NULL) return STATUS_INSUFFICIENT_RESOURCES;
+    if (!YcpInitializationCoverageInitialize(
+            Coverage,
+            slots,
+            slotCount,
+            MaximumEntries)) {
+        ExFreePoolWithTag(slots, YCP_POOL_TAG);
+        return STATUS_INVALID_PARAMETER;
+    }
+    return STATUS_SUCCESS;
+}
+
+static VOID
+YcpFreeInitializationCoverage(
+    _Inout_ PYCP_INITIALIZATION_COVERAGE Coverage
+    )
+{
+    if (Coverage != NULL && Coverage->Slots != NULL) {
+        ExFreePoolWithTag(Coverage->Slots, YCP_POOL_TAG);
+        RtlZeroMemory(Coverage, sizeof(*Coverage));
+    }
+}
+
 static VOID
 YcpClearTrayLocked(
     VOID
@@ -394,9 +501,7 @@ YcpClearTargetLocked(
     g_YcpState.Maintenance = FALSE;
     g_YcpState.UnloadPrepared = FALSE;
     g_YcpState.LeaseExpiresAt100ns = 0;
-    g_YcpState.InitializationExpectedEntries = 0;
-    g_YcpState.InitializationMarkedEntries = 0;
-    g_YcpState.InitializationFailures = 0;
+    YcpClearInitializationCoverageLocked();
     g_YcpState.InitializationExpiresAt100ns = 0;
     RtlZeroMemory(g_YcpState.LeaseId, sizeof(g_YcpState.LeaseId));
     RtlZeroMemory(g_YcpState.ImageSha256, sizeof(g_YcpState.ImageSha256));
@@ -464,9 +569,11 @@ YcpBuildStatusLocked(
     Status->TargetSessionId = 0;
     Status->TargetCreateTime100ns = g_YcpState.TargetCreateTime100ns;
     Status->MaintenanceExpiresAt100ns = g_YcpState.LeaseExpiresAt100ns;
-    Status->InitializationExpectedEntries = g_YcpState.InitializationExpectedEntries;
-    Status->InitializationMarkedEntries = g_YcpState.InitializationMarkedEntries;
-    Status->InitializationFailures = g_YcpState.InitializationFailures;
+    Status->InitializationExpectedEntries = g_YcpState.InitializationCoverage.DeclaredEntries;
+    Status->InitializationMarkedEntries = g_YcpState.InitializationCoverage.MarkedEntries;
+    Status->InitializationFailures = g_YcpState.InitializationCoverage.Failures;
+    Status->InitializationUnexpectedEntries = g_YcpState.InitializationCoverage.UnexpectedEntries;
+    Status->InitializationDuplicateEntries = g_YcpState.InitializationCoverage.DuplicateEntries;
     Status->InitializationExpiresAt100ns = g_YcpState.InitializationExpiresAt100ns;
     RtlCopyMemory(Status->LeaseId, g_YcpState.LeaseId, sizeof(Status->LeaseId));
     RtlCopyMemory(Status->ImageSha256, g_YcpState.ImageSha256, sizeof(Status->ImageSha256));
@@ -757,10 +864,18 @@ YcpBeginInitialization(
     UNICODE_STRING imagePath;
     UNICODE_STRING rootPath;
     UNICODE_STRING dataRootPath;
+    YCP_INITIALIZATION_COVERAGE coverage;
+
+    RtlZeroMemory(&coverage, sizeof(coverage));
 
     status = YcpValidateHeader(&Request->Header, sizeof(*Request));
     if (!NT_SUCCESS(status)) {
         return status;
+    }
+    if (Request->InitializationManifestEntries == 0 ||
+        Request->InitializationManifestEntries > YCP_MAX_INITIALIZATION_ENTRIES ||
+        Request->Reserved != 0) {
+        return STATUS_INVALID_PARAMETER;
     }
 
     status = YcpValidateIdentity(
@@ -775,6 +890,16 @@ YcpBeginInitialization(
         return status;
     }
 
+    status = YcpAllocateInitializationCoverage(
+        Request->InitializationManifestEntries,
+        &coverage);
+    if (!NT_SUCCESS(status)) {
+        YcpFreeString(&imagePath);
+        YcpFreeString(&rootPath);
+        YcpFreeString(&dataRootPath);
+        return status;
+    }
+
     KeEnterCriticalRegion();
     ExAcquirePushLockExclusive(&g_YcpState.Lock);
     if (g_YcpState.Unloading) {
@@ -783,6 +908,7 @@ YcpBeginInitialization(
         YcpFreeString(&imagePath);
         YcpFreeString(&rootPath);
         YcpFreeString(&dataRootPath);
+        YcpFreeInitializationCoverage(&coverage);
         return STATUS_DEVICE_BUSY;
     }
 
@@ -798,10 +924,21 @@ YcpBeginInitialization(
             YcpFreeString(&imagePath);
             YcpFreeString(&rootPath);
             YcpFreeString(&dataRootPath);
+            YcpFreeInitializationCoverage(&coverage);
             return STATUS_DEVICE_BUSY;
         } else {
             YcpClearTargetLocked();
         }
+    }
+
+    if (g_YcpState.InitializationGeneration == MAXULONGLONG) {
+        ExReleasePushLockExclusive(&g_YcpState.Lock);
+        KeLeaveCriticalRegion();
+        YcpFreeString(&imagePath);
+        YcpFreeString(&rootPath);
+        YcpFreeString(&dataRootPath);
+        YcpFreeInitializationCoverage(&coverage);
+        return STATUS_INTEGER_OVERFLOW;
     }
 
     g_YcpState.TargetProcess = Caller;
@@ -819,9 +956,10 @@ YcpBeginInitialization(
     g_YcpState.UnloadPrepared = FALSE;
     g_YcpState.Active = FALSE;
     g_YcpState.Initializing = TRUE;
-    g_YcpState.InitializationExpectedEntries = 0;
-    g_YcpState.InitializationMarkedEntries = 0;
-    g_YcpState.InitializationFailures = 0;
+    ++g_YcpState.InitializationGeneration;
+    g_YcpState.InitializationCoverage = coverage;
+    RtlZeroMemory(&coverage, sizeof(coverage));
+    g_YcpState.InitializationManifestEntries = Request->InitializationManifestEntries;
     {
         LARGE_INTEGER now;
         KeQuerySystemTime(&now);
@@ -833,6 +971,48 @@ YcpBeginInitialization(
     ExReleasePushLockExclusive(&g_YcpState.Lock);
     KeLeaveCriticalRegion();
     return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+YcpDeclareInitializationEntry(
+    _In_ PEPROCESS Caller,
+    _In_ const YCP_INITIALIZATION_ENTRY_REQUEST *Request
+    )
+{
+    NTSTATUS status;
+
+    status = YcpValidateHeader(&Request->Header, sizeof(*Request));
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    if (Request->Reserved != 0 || Request->Flags != 0 ||
+        YcpIsZeroBytes(Request->InstanceNonce, sizeof(Request->InstanceNonce))) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    KeEnterCriticalRegion();
+    ExAcquirePushLockExclusive(&g_YcpState.Lock);
+    status = YcpValidateCallerLocked(Caller);
+    if (NT_SUCCESS(status)) {
+        if (!YcpInitializationValidLocked() || g_YcpState.Active) {
+            status = STATUS_INVALID_DEVICE_STATE;
+        } else if (!RtlEqualMemory(g_YcpState.InstanceNonce, Request->InstanceNonce,
+                                   sizeof(g_YcpState.InstanceNonce))) {
+            status = STATUS_ACCESS_DENIED;
+        } else if (!YcpInitializationCoverageDeclare(
+                       &g_YcpState.InitializationCoverage,
+                       Request->Identity.VolumeSerialNumber,
+                       Request->Identity.FileIndex,
+                       Request->Flags)) {
+            status = STATUS_DEVICE_NOT_READY;
+        } else {
+            g_YcpState.LastRequestId = Request->Header.RequestId;
+            g_YcpState.LastStatus = STATUS_SUCCESS;
+        }
+    }
+    ExReleasePushLockExclusive(&g_YcpState.Lock);
+    KeLeaveCriticalRegion();
+    return status;
 }
 
 static NTSTATUS
@@ -860,13 +1040,13 @@ YcpCommitInitialization(
             status = STATUS_ACCESS_DENIED;
         } else if (!YcpInitializationValidLocked()) {
             status = STATUS_TIMEOUT;
-        } else if (g_YcpState.InitializationFailures != 0 ||
-                   g_YcpState.InitializationMarkedEntries < Request->ExpectedEntries) {
+        } else if (!YcpInitializationCoverageCanCommit(
+                       &g_YcpState.InitializationCoverage,
+                       Request->ExpectedEntries)) {
             status = STATUS_DEVICE_NOT_READY;
         } else if (g_YcpState.LastRequestId == Request->Header.RequestId) {
             status = STATUS_INVALID_PARAMETER;
         } else {
-            g_YcpState.InitializationExpectedEntries = Request->ExpectedEntries;
             g_YcpState.Initializing = FALSE;
             g_YcpState.InitializationExpiresAt100ns = 0;
             g_YcpState.Active = TRUE;
@@ -1194,20 +1374,28 @@ YcpProtectionIsInitializing(
 
 VOID
 YcpRecordInitializationStream(
-    _In_ PEPROCESS Requestor,
+    _In_ const YCP_INITIALIZATION_OBSERVATION_CONTEXT *Snapshot,
+    _In_opt_ const YCP_INITIALIZATION_FILE_IDENTITY *Identity,
+    _In_ ULONG Flags,
     _In_ BOOLEAN Marked
     )
 {
     KeEnterCriticalRegion();
     ExAcquirePushLockExclusive(&g_YcpState.Lock);
-    if (YcpInitializationValidLocked() && YcpTargetMatchesLocked(Requestor)) {
-        if (Marked) {
-            if (g_YcpState.InitializationMarkedEntries != MAXULONG) {
-                ++g_YcpState.InitializationMarkedEntries;
-            }
-        } else if (g_YcpState.InitializationFailures != MAXULONG) {
-            ++g_YcpState.InitializationFailures;
-        }
+    if (Snapshot != NULL && Snapshot->OwnerProcess != NULL &&
+        YcpInitializationValidLocked() &&
+        Snapshot->OwnerProcess == g_YcpState.TargetProcess &&
+        Snapshot->Generation == g_YcpState.InitializationGeneration &&
+        RtlEqualMemory(
+            Snapshot->InstanceNonce,
+            g_YcpState.InstanceNonce,
+            sizeof(Snapshot->InstanceNonce))) {
+        YcpInitializationCoverageObserve(
+            &g_YcpState.InitializationCoverage,
+            Identity == NULL ? 0 : Identity->VolumeSerialNumber,
+            Identity == NULL ? 0 : Identity->FileIndex,
+            Flags,
+            Marked ? 1 : 0);
     }
     ExReleasePushLockExclusive(&g_YcpState.Lock);
     KeLeaveCriticalRegion();
@@ -1399,6 +1587,16 @@ YcpDeviceControl(
             status = YcpAbortInitialization(
                 caller,
                 (const YCP_INITIALIZE_ABORT_REQUEST *)buffer);
+        }
+        break;
+
+    case IOCTL_YCP_DECLARE_INITIALIZATION_ENTRY:
+        if (inputLength != sizeof(YCP_INITIALIZATION_ENTRY_REQUEST)) {
+            status = STATUS_BUFFER_TOO_SMALL;
+        } else {
+            status = YcpDeclareInitializationEntry(
+                caller,
+                (const YCP_INITIALIZATION_ENTRY_REQUEST *)buffer);
         }
         break;
 

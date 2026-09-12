@@ -2,6 +2,9 @@
 #include <assert.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #define _Inout_
 #define _In_
 #define _Flt_CompletionContext_Outptr_
@@ -28,10 +31,18 @@
 #define FILE_OVERWRITE_IF 5
 #define FILE_SUPERSEDE 0
 typedef unsigned long ULONG;
+typedef unsigned long long ULONGLONG;
+typedef unsigned char UCHAR;
+typedef void *PEPROCESS;
 typedef int BOOLEAN;
 typedef int NTSTATUS;
 typedef int FLT_PREOP_CALLBACK_STATUS;
 typedef void *PVOID;
+typedef struct _YCP_INITIALIZATION_OBSERVATION_CONTEXT {
+    PEPROCESS OwnerProcess;
+    ULONGLONG Generation;
+    UCHAR InstanceNonce[16];
+} YCP_INITIALIZATION_OBSERVATION_CONTEXT, *PYCP_INITIALIZATION_OBSERVATION_CONTEXT;
 typedef struct { int Name; } NAME;
 typedef NAME *PFLT_FILE_NAME_INFORMATION;
 typedef struct { int MajorFunction,IrpFlags; struct { struct { ULONG Options; } Create; struct { int FileInformationClass; } SetFileInformation; } Parameters; } IOPB;
@@ -40,6 +51,14 @@ typedef DATA *PFLT_CALLBACK_DATA;
 typedef void *PCFLT_RELATED_OBJECTS;
 static int active=1, initializing, mutation, trusted, product, stream, resolved=1, ancestor;
 static int streamQueries;
+static void *FltGetRequestorProcess(DATA *d) { (void)d; return NULL; }
+static int YcpCaptureInitializationSnapshot(PEPROCESS requestor, PYCP_INITIALIZATION_OBSERVATION_CONTEXT snapshot) { (void)requestor; (void)snapshot; return 0; }
+static void YcpReleaseInitializationSnapshot(PYCP_INITIALIZATION_OBSERVATION_CONTEXT snapshot) { (void)snapshot; }
+static void YcpRecordInitializationStream(const YCP_INITIALIZATION_OBSERVATION_CONTEXT *snapshot, void *identity, ULONG flags, BOOLEAN marked) { (void)snapshot; (void)identity; (void)flags; (void)marked; }
+static void *ExAllocatePool2(unsigned long flags, size_t size, unsigned long tag) { (void)flags; (void)tag; return calloc(1, size); }
+#define POOL_FLAG_NON_PAGED 1UL
+#define YCP_POOL_TAG 0x59435059UL
+static void RtlZeroMemory(void *memory, size_t size) { memset(memory, 0, size); }
 static int YcpCreateChangesNamespace(PFLT_CALLBACK_DATA Data);
 static NAME name;
 static int YcpProtectionIsActive(void) { return active; }
@@ -53,7 +72,6 @@ static int FltParseFileNameInformation(NAME *n) { (void)n; return 0; }
 static int YcpShouldProtectAncestor(int *n) { (void)n; return ancestor; }
 static int YcpShouldProtectFile(int *n) { (void)n; return product; }
 static int YcpDestinationIsProtected(DATA *d,void *o,int *r) { (void)d;(void)o;*r=1;return 0; }
-static void FltReleaseFileNameInformation(NAME *n) { (void)n; }
 static int YcpIsTrustedWriter(DATA *d) { (void)d; return trusted; }
 static int YcpIsNamespaceMutation(DATA *d) { return d->Iopb->MajorFunction==IRP_MJ_SET_INFORMATION || YcpCreateChangesNamespace(d); }
 static int YcpDenyMutation(DATA *d) { (void)d;return FLT_PREOP_COMPLETE; }

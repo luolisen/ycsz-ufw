@@ -5,6 +5,12 @@ using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
 namespace Ycsz {
+    public sealed class SelfProtectionInitializationEntry {
+        public ulong VolumeSerial;
+        public ulong FileIndex;
+        public bool IsDirectory;
+    }
+
     public sealed class SelfProtectionFileIdentityObservation {
         public string Path;
         public ulong VolumeSerial;
@@ -22,20 +28,22 @@ namespace Ycsz {
         public bool Passed { get; private set; }
         public bool MappingWritebackConditionMet { get; private set; }
         public int ScannedEntries { get; private set; }
+        public IList<SelfProtectionInitializationEntry> InitializationEntries { get; private set; }
         public IList<string> Issues { get; private set; }
 
-        internal SelfProtectionPreflightResult(bool passed,int scannedEntries,IList<string> issues) {
+        internal SelfProtectionPreflightResult(bool passed,int scannedEntries,IList<SelfProtectionInitializationEntry> initializationEntries,IList<string> issues) {
             Passed=passed;
             // Directory/link inspection does not detect existing writable
             // sections or prove cache writeback ownership. Do not claim it does.
             MappingWritebackConditionMet=false;
             ScannedEntries=scannedEntries;
+            InitializationEntries=initializationEntries??new List<SelfProtectionInitializationEntry>();
             Issues=issues??new List<string>();
         }
 
         public string Summary {
             get {
-                if(Passed) return "文件身份 preflight 通过：扫描 "+ScannedEntries+" 项";
+                if(Passed) return "文件身份 preflight 通过：扫描 "+ScannedEntries+" 项，唯一 manifest "+InitializationEntries.Count+" 项";
                 return "文件身份 preflight 未通过："+String.Join("；",new List<string>(Issues).ToArray());
             }
         }
@@ -88,6 +96,7 @@ namespace Ycsz {
             var issues=new List<string>();
             if(initialIssues!=null) foreach(string issue in initialIssues) issues.Add(issue);
             var identities=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+            var initializationEntries=new List<SelfProtectionInitializationEntry>();
             int scanned=0;
             if(source!=null) foreach(var item in source) {
                 if(item==null) { issues.Add("文件身份记录为空"); continue; }
@@ -97,14 +106,21 @@ namespace Ycsz {
                 if(item.Readable && !item.AttributesConsistent) issues.Add("路径属性与句柄属性不一致:"+item.Path);
                 if(item.Readable && !item.IsDirectory && item.LinkCount>1) issues.Add("文件存在多个硬链接:"+item.Path);
                 if(!item.Readable || item.ReparsePoint || !item.AttributesConsistent) continue;
+                if(item.VolumeSerial==0 && item.FileIndex==0) { issues.Add("文件身份为空:"+item.Path); continue; }
                 string key=item.VolumeSerial.ToString("X8")+":"+item.FileIndex.ToString("X16");
                 string previous;
                 if(identities.TryGetValue(key,out previous) && !String.Equals(previous,item.Path,StringComparison.OrdinalIgnoreCase)) {
                     issues.Add("同一文件身份存在多个产品路径:"+previous+" <> "+item.Path);
-                } else if(!identities.ContainsKey(key)) identities.Add(key,item.Path);
+                } else if(!identities.ContainsKey(key)) {
+                    if(initializationEntries.Count>=65536) issues.Add("初始化 manifest 超过 65536 项:"+item.Path);
+                    else {
+                        identities.Add(key,item.Path);
+                        initializationEntries.Add(new SelfProtectionInitializationEntry { VolumeSerial=item.VolumeSerial,FileIndex=item.FileIndex,IsDirectory=item.IsDirectory });
+                    }
+                }
             }
             bool passed=issues.Count==0 && scanned>0;
-            return new SelfProtectionPreflightResult(passed,scanned,issues);
+            return new SelfProtectionPreflightResult(passed,scanned,initializationEntries,issues);
         }
 
         static void Collect(string root,IList<SelfProtectionFileIdentityObservation> observations,IList<string> issues) {

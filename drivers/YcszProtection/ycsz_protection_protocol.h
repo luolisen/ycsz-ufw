@@ -12,10 +12,11 @@
 extern "C" {
 #endif
 
-#define YCP_PROTOCOL_VERSION              3u
+#define YCP_PROTOCOL_VERSION              4u
 #define YCP_MAX_PATH_CHARS               512u
 #define YCP_MAX_LEASE_SECONDS            900u
 #define YCP_INITIALIZATION_TIMEOUT_SECONDS 120u
+#define YCP_MAX_INITIALIZATION_ENTRIES   65536u
 #define YCP_IMAGE_NAME                   L"Ycsz.exe"
 #define YCP_SERVICE_NAME                 L"YcszFirewall"
 #define YCP_DEVICE_DOS_NAME              L"\\DosDevices\\YcszProtection"
@@ -42,6 +43,8 @@ extern "C" {
     CTL_CODE(YCP_DEVICE_TYPE, YCP_IOCTL_FUNCTION_BASE + 7, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
 #define IOCTL_YCP_ABORT_INITIALIZE \
     CTL_CODE(YCP_DEVICE_TYPE, YCP_IOCTL_FUNCTION_BASE + 8, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
+#define IOCTL_YCP_DECLARE_INITIALIZATION_ENTRY \
+    CTL_CODE(YCP_DEVICE_TYPE, YCP_IOCTL_FUNCTION_BASE + 9, METHOD_BUFFERED, FILE_READ_DATA | FILE_WRITE_DATA)
 
 #define YCP_STATE_ACTIVE                 0x00000001u
 #define YCP_STATE_PROCESS_CALLBACK       0x00000002u
@@ -73,6 +76,8 @@ typedef struct _YCP_ACTIVATE_REQUEST {
     YCP_PROCESS_IDENTITY Identity;
     WCHAR ProtectedRoot[YCP_MAX_PATH_CHARS];
     WCHAR ProtectedDataRoot[YCP_MAX_PATH_CHARS];
+    ULONG InitializationManifestEntries;
+    ULONG Reserved;
 } YCP_ACTIVATE_REQUEST;
 
 typedef struct _YCP_TRAY_REQUEST {
@@ -103,6 +108,19 @@ typedef struct _YCP_INITIALIZE_ABORT_REQUEST {
     UCHAR InstanceNonce[16];
 } YCP_INITIALIZE_ABORT_REQUEST;
 
+typedef struct _YCP_INITIALIZATION_FILE_IDENTITY {
+    ULONGLONG VolumeSerialNumber;
+    LONGLONG FileIndex;
+} YCP_INITIALIZATION_FILE_IDENTITY;
+
+typedef struct _YCP_INITIALIZATION_ENTRY_REQUEST {
+    YCP_CONTROL_HEADER Header;
+    YCP_INITIALIZATION_FILE_IDENTITY Identity;
+    ULONG Flags;
+    ULONG Reserved;
+    UCHAR InstanceNonce[16];
+} YCP_INITIALIZATION_ENTRY_REQUEST;
+
 typedef struct _YCP_STATUS {
     ULONG Size;
     ULONG Version;
@@ -121,6 +139,8 @@ typedef struct _YCP_STATUS {
     ULONG InitializationExpectedEntries;
     ULONG InitializationMarkedEntries;
     ULONG InitializationFailures;
+    ULONG InitializationUnexpectedEntries;
+    ULONG InitializationDuplicateEntries;
     ULONG InitializationReserved;
     LONGLONG InitializationExpiresAt100ns;
     YCP_PROCESS_IDENTITY TrayIdentity;

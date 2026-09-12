@@ -21,6 +21,7 @@ namespace Ycsz {
         const uint IoctlUnregisterTray=0x8000e018u;
         const uint IoctlCommitInitialize=0x8000e01cu;
         const uint IoctlAbortInitialize=0x8000e020u;
+        const uint IoctlDeclareInitializationEntry=0x8000e024u;
 
         const uint StateActive=0x00000001u;
         const uint StateProcessCallback=0x00000002u;
@@ -45,6 +46,7 @@ namespace Ycsz {
             public NativeHeader Header; public NativeIdentity Identity;
             [MarshalAs(UnmanagedType.ByValArray, SizeConst=MaxPathChars, ArraySubType=UnmanagedType.U2)] public ushort[] ProtectedRoot;
             [MarshalAs(UnmanagedType.ByValArray, SizeConst=MaxPathChars, ArraySubType=UnmanagedType.U2)] public ushort[] ProtectedDataRoot;
+            public uint InitializationManifestEntries; public uint Reserved;
         }
         [StructLayout(LayoutKind.Sequential, Pack=8)] struct NativeTrayRequest {
             public NativeHeader Header; public NativeIdentity Identity;
@@ -66,6 +68,10 @@ namespace Ycsz {
             public NativeHeader Header;
             [MarshalAs(UnmanagedType.ByValArray, SizeConst=16, ArraySubType=UnmanagedType.U1)] public byte[] InstanceNonce;
         }
+        [StructLayout(LayoutKind.Sequential, Pack=8)] struct NativeInitializationEntryRequest {
+            public NativeHeader Header; public ulong VolumeSerialNumber; public long FileIndex; public uint Flags; public uint Reserved;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst=16, ArraySubType=UnmanagedType.U1)] public byte[] InstanceNonce;
+        }
         [StructLayout(LayoutKind.Sequential, Pack=8)] struct NativeStatus {
             public uint Size; public uint Version; public uint State; public uint LastStatus;
             public uint TargetPid; public uint TargetSessionId; public long TargetCreateTime100ns; public long MaintenanceExpiresAt100ns;
@@ -75,7 +81,7 @@ namespace Ycsz {
             [MarshalAs(UnmanagedType.ByValArray, SizeConst=MaxPathChars, ArraySubType=UnmanagedType.U2)] public ushort[] ImagePath;
             [MarshalAs(UnmanagedType.ByValArray, SizeConst=MaxPathChars, ArraySubType=UnmanagedType.U2)] public ushort[] ProtectedRoot;
             [MarshalAs(UnmanagedType.ByValArray, SizeConst=MaxPathChars, ArraySubType=UnmanagedType.U2)] public ushort[] ProtectedDataRoot;
-            public uint InitializationExpectedEntries; public uint InitializationMarkedEntries; public uint InitializationFailures; public uint InitializationReserved; public long InitializationExpiresAt100ns;
+            public uint InitializationExpectedEntries; public uint InitializationMarkedEntries; public uint InitializationFailures; public uint InitializationUnexpectedEntries; public uint InitializationDuplicateEntries; public uint InitializationReserved; public long InitializationExpiresAt100ns;
             public NativeIdentity TrayIdentity;
         }
 
@@ -94,11 +100,13 @@ namespace Ycsz {
         public static int UnloadRequestSize { get { return Marshal.SizeOf(typeof(NativeUnloadRequest)); } }
         public static int InitializeCommitRequestSize { get { return Marshal.SizeOf(typeof(NativeInitializeCommitRequest)); } }
         public static int InitializeAbortRequestSize { get { return Marshal.SizeOf(typeof(NativeInitializeAbortRequest)); } }
+        public static int InitializationEntryRequestSize { get { return Marshal.SizeOf(typeof(NativeInitializationEntryRequest)); } }
         public static uint PrepareUnloadIoctl { get { return IoctlPrepareUnload; } }
         public static int StatusSize { get { return Marshal.SizeOf(typeof(NativeStatus)); } }
         public static uint BeginInitializeIoctl { get { return IoctlBeginInitialize; } }
         public static uint CommitInitializeIoctl { get { return IoctlCommitInitialize; } }
         public static uint AbortInitializeIoctl { get { return IoctlAbortInitialize; } }
+        public static uint DeclareInitializationEntryIoctl { get { return IoctlDeclareInitializationEntry; } }
         public static uint EnterMaintenanceIoctl { get { return IoctlEnterMaintenance; } }
         public static uint ExitMaintenanceIoctl { get { return IoctlExitMaintenance; } }
         public static uint QueryStatusIoctl { get { return IoctlQueryStatus; } }
@@ -112,6 +120,9 @@ namespace Ycsz {
                 if(request.Operation==SelfProtectionOperation.BeginInitialize) {
                     var native=BuildActivate(request);
                     SendNoOutput(device,IoctlBeginInitialize,ref native);
+                } else if(request.Operation==SelfProtectionOperation.DeclareInitializationEntry) {
+                    var native=BuildInitializationEntry(request);
+                    SendNoOutput(device,IoctlDeclareInitializationEntry,ref native);
                 } else if(request.Operation==SelfProtectionOperation.CommitInitialize) {
                     var native=BuildInitializeCommit(request);
                     SendNoOutput(device,IoctlCommitInitialize,ref native);
@@ -153,7 +164,20 @@ namespace Ycsz {
                 Header=BuildHeader(request.RequestId,Marshal.SizeOf(typeof(NativeActivateRequest))),
                 Identity=BuildIdentity(request.Identity,image),
                 ProtectedRoot=ToFixedWchar(root),
-                ProtectedDataRoot=ToFixedWchar(ToKernelPath(dataRoot))
+                ProtectedDataRoot=ToFixedWchar(ToKernelPath(dataRoot)),
+                InitializationManifestEntries=checked((uint)request.InitializationManifestEntries),
+                Reserved=0
+            };
+        }
+
+        NativeInitializationEntryRequest BuildInitializationEntry(SelfProtectionRequest request) {
+            return new NativeInitializationEntryRequest {
+                Header=BuildHeader(request.RequestId,Marshal.SizeOf(typeof(NativeInitializationEntryRequest))),
+                VolumeSerialNumber=request.InitializationEntry.VolumeSerial,
+                FileIndex=unchecked((long)request.InitializationEntry.FileIndex),
+                Flags=0,
+                Reserved=0,
+                InstanceNonce=FromHex(request.Identity.InstanceNonce,16)
             };
         }
 
@@ -236,8 +260,9 @@ namespace Ycsz {
                 throw new InvalidDataException("驱动应答协议不匹配");
             bool initializing=(status.State&StateInitializing)!=0;
             bool active=(status.State&StateActive)!=0;
+            bool initializationRequest=request.Operation==SelfProtectionOperation.BeginInitialize || request.Operation==SelfProtectionOperation.DeclareInitializationEntry;
             if(status.LastStatus!=0 || (status.State&StateError)!=0 ||
-                (request.Operation==SelfProtectionOperation.BeginInitialize ? (!initializing || active) : (!active || initializing)))
+                (initializationRequest ? (!initializing || active) : (!active || initializing)))
                 throw new InvalidDataException("驱动未确认请求所需状态");
             var identity=request.Identity;
             if(status.TargetPid!=identity.ProcessId || status.TargetSessionId!=(uint)identity.SessionId || status.TargetCreateTime100ns!=identity.StartTimeUtcFileTime ||

@@ -36,12 +36,12 @@ if ($Mode -eq 'Static') {
     }
     Check 'Self protection driver source gates' {
         $driver=Join-Path $repo 'drivers\YcszProtection'
-        foreach ($name in @('ycsz_protection.c','ycsz_minifilter.c','ycsz_protection.h','ycsz_protection_protocol.h','YcszProtection.vcxproj','YcszProtection.inf')) {
+        foreach ($name in @('ycsz_protection.c','ycsz_minifilter.c','ycsz_initialization_coverage.c','ycsz_initialization_coverage.h','ycsz_protection.h','ycsz_protection_protocol.h','YcszProtection.vcxproj','YcszProtection.inf')) {
             if (!(Test-Path (Join-Path $driver $name))) { throw "Missing driver source: $name" }
         }
         if (!(Test-Path (Join-Path $repo 'scripts\Test-ProtectionDriver.ps1'))) { throw 'Dynamic driver validation tool missing' }
-        $source=(Get-Content (Join-Path $driver 'ycsz_protection.c') -Raw) + (Get-Content (Join-Path $driver 'ycsz_minifilter.c') -Raw)
-        foreach ($needle in @('OB_OPERATION_HANDLE_CREATE','OB_OPERATION_HANDLE_DUPLICATE','PROCESS_TERMINATE','IRP_MJ_WRITE','FileDispositionInformation','FileRenameInformation','IOCTL_YCP_REGISTER_TRAY','YcpIsTrustedWriter','FSCTL_SET_REPARSE_POINT','ProtectedDataRoot','TrustedDataRoot','FLT_STREAM_CONTEXT','FltGetStreamContext','FltSetStreamContext','FltQueryInformationFile','FileInternalInformation','YcpPostOperationFile','YcpAttachProtectedStreamContext','FltObjectDereference','YcpProtectionIsInitializing','YcpRecordInitializationStream','InitializationFailures','YcpCommitInitialization','YcpAbortInitialization','YCP_STATE_INITIALIZING')) {
+        $source=(Get-Content (Join-Path $driver 'ycsz_protection.c') -Raw) + (Get-Content (Join-Path $driver 'ycsz_minifilter.c') -Raw) + (Get-Content (Join-Path $driver 'ycsz_initialization_coverage.c') -Raw)
+        foreach ($needle in @('OB_OPERATION_HANDLE_CREATE','OB_OPERATION_HANDLE_DUPLICATE','PROCESS_TERMINATE','IRP_MJ_WRITE','FileDispositionInformation','FileRenameInformation','IOCTL_YCP_REGISTER_TRAY','YcpIsTrustedWriter','FSCTL_SET_REPARSE_POINT','ProtectedDataRoot','TrustedDataRoot','FLT_STREAM_CONTEXT','FLT_INSTANCE_CONTEXT','FltGetStreamContext','FltSetStreamContext','FltQueryInformationFile','FltQueryVolumeInformation','FileInternalInformation','YcpInstanceSetup','YcpPostOperationFile','YcpAttachProtectedStreamContext','FltObjectDereference','YcpProtectionIsInitializing','YcpRecordInitializationStream','YcpCaptureInitializationSnapshot','YcpReleaseInitializationSnapshot','InitializationGeneration','YcpInitializationCoverageDeclare','YcpInitializationCoverageObserve','YcpInitializationCoverageCanCommit','InitializationFailures','InitializationUnexpectedEntries','InitializationDuplicateEntries','YcpCommitInitialization','YcpAbortInitialization','YCP_STATE_INITIALIZING')) {
             if ($source -notmatch [regex]::Escape($needle)) { throw "Driver source gate missing: $needle" }
         }
         if ($source -match 'Ioctl.*PID|arbitrary.*PID') { throw 'Driver source appears to expose an arbitrary PID control path' }
@@ -50,8 +50,8 @@ if ($Mode -eq 'Static') {
         if ($source -notmatch 'OpenFileObjects == 0' -or $source -notmatch 'FsContext = &g_YcpState') { throw 'Control file references do not gate optional unload' }
         if ($source -match 'DriverUnload\s*=') { throw 'Unload must be managed by Filter Manager' }
         $protocol=Get-Content (Join-Path $driver 'ycsz_protection_protocol.h') -Raw
-        if ($protocol -notmatch 'YCP_PROTOCOL_VERSION\s+3u' -or $protocol -notmatch 'YCP_INITIALIZATION_TIMEOUT_SECONDS\s+120u' -or $protocol -notmatch 'YCP_MAX_LEASE_SECONDS\s+900') { throw 'Protection protocol v3 initialization barrier or maintenance lease bound missing' }
-        if ($protocol -notmatch 'IOCTL_YCP_BEGIN_INITIALIZE' -or $protocol -notmatch 'IOCTL_YCP_COMMIT_INITIALIZE' -or $protocol -notmatch 'IOCTL_YCP_ABORT_INITIALIZE' -or $protocol -notmatch 'YCP_INITIALIZE_COMMIT_REQUEST') { throw 'Two-phase initialization IOCTL contract missing' }
+        if ($protocol -notmatch 'YCP_PROTOCOL_VERSION\s+4u' -or $protocol -notmatch 'YCP_INITIALIZATION_TIMEOUT_SECONDS\s+120u' -or $protocol -notmatch 'YCP_MAX_LEASE_SECONDS\s+900' -or $protocol -notmatch 'YCP_MAX_INITIALIZATION_ENTRIES') { throw 'Protection protocol v4 per-file coverage barrier or maintenance lease bound missing' }
+        if ($protocol -notmatch 'IOCTL_YCP_BEGIN_INITIALIZE' -or $protocol -notmatch 'IOCTL_YCP_DECLARE_INITIALIZATION_ENTRY' -or $protocol -notmatch 'IOCTL_YCP_COMMIT_INITIALIZE' -or $protocol -notmatch 'IOCTL_YCP_ABORT_INITIALIZE' -or $protocol -notmatch 'YCP_INITIALIZATION_ENTRY_REQUEST') { throw 'Per-file initialization IOCTL contract missing' }
         if ($protocol -notmatch 'IOCTL_YCP_PREPARE_UNLOAD') { throw 'Authenticated unload protocol missing' }
         $installer=Get-Content (Join-Path $repo 'installer\Ycsz.nsi') -Raw
         if ($installer -match 'YcszProtection') { throw 'Unverified driver must not be in the default installer' }
@@ -65,8 +65,8 @@ if ($Mode -eq 'Static') {
         if ($program -notmatch 'self-protection-enter' -or $program -notmatch 'self-protection-exit') { throw 'Authenticated maintenance IPC operations missing' }
         if ($program -notmatch 'self-protection-prepare-unload' -or $program -notmatch 'PrepareUnload') { throw 'Authenticated unload preparation path missing' }
         $preflight=Get-Content (Join-Path $repo 'src\Ycsz.Core\SelfProtectionFilePreflight.cs') -Raw
-        if ($transport -notmatch 'QueryDosDevice' -or $transport -notmatch 'StateDataRoot' -or $transport -notmatch 'RegisterTray' -or $transport -notmatch 'BeginInitialize' -or $transport -notmatch 'CommitInitialize' -or $transport -notmatch 'AbortInitialize' -or $driver -notmatch 'SeLocateProcessImageName' -or $preflight -notmatch 'GetFileInformationByHandle' -or $preflight -notmatch 'FileAttributes' -or $preflight -notmatch 'AttributesConsistent') { throw 'Fixed image identity, dual-root, handle-authoritative file identity, two-phase activation or tray contract missing' }
-        if ($core -notmatch 'SelfProtectionState.Initializing' -or $core -notmatch 'TryAbortInitialization' -or $core -notmatch 'CreateCommit') { throw 'User-mode initialization barrier or recovery path missing' }
+        if ($transport -notmatch 'QueryDosDevice' -or $transport -notmatch 'StateDataRoot' -or $transport -notmatch 'RegisterTray' -or $transport -notmatch 'BeginInitialize' -or $transport -notmatch 'DeclareInitializationEntry' -or $transport -notmatch 'CommitInitialize' -or $transport -notmatch 'AbortInitialize' -or $driver -notmatch 'SeLocateProcessImageName' -or $preflight -notmatch 'GetFileInformationByHandle' -or $preflight -notmatch 'FileAttributes' -or $preflight -notmatch 'AttributesConsistent' -or $preflight -notmatch 'InitializationEntries') { throw 'Fixed image identity, dual-root, handle-authoritative file identity, per-file initialization or tray contract missing' }
+        if ($core -notmatch 'SelfProtectionState.Initializing' -or $core -notmatch 'TryAbortInitialization' -or $core -notmatch 'CreateInitializationEntry' -or $core -notmatch 'CreateCommit') { throw 'User-mode per-file initialization barrier or recovery path missing' }
         if ($program -notmatch 'SelfProtectionFilePreflight' -or $preflight -notmatch 'MappingWritebackConditionMet') { throw 'Activation preflight or mapped-write condition missing' }
         if ($program -notmatch '--protection-status' -or $program -notmatch 'RegisterTray') { throw 'Actual activation or tray registration path missing' }
         if ($transport -match 'ServiceStop') { throw 'Transport must not report unimplemented kernel ServiceStop capability' }
@@ -106,7 +106,7 @@ if ($Mode -eq 'Static') {
         if ($driver) {
             if ($driver.Status -ne 'Running') { throw 'YcszProtection is registered but not Running' }
             $probe=Start-Process (Join-Path $InstallDir 'Ycsz.exe') -ArgumentList @('--protection-status') -Wait -PassThru -WindowStyle Hidden
-            if ($probe.ExitCode -ne 0) { throw 'YcszProtection is Running but v3 activation was not confirmed' }
+            if ($probe.ExitCode -ne 0) { throw 'YcszProtection is Running but v4 activation was not confirmed' }
         }
     }
 }

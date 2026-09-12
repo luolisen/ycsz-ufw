@@ -183,10 +183,10 @@ try {
     (Get-Service YcszFirewall).WaitForStatus('Running',[TimeSpan]::FromSeconds(30))
     if ((Get-Service YcszFirewall).Status -ne 'Running') { throw 'YcszFirewall did not restart after protection activation.' }
     $activation = & $image --protection-status 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) { throw "YcszFirewall is Running but v3 self-protection activation was not confirmed: $activation" }
+    if ($LASTEXITCODE -ne 0) { throw "YcszFirewall is Running but v4 self-protection activation was not confirmed: $activation" }
     if (Test-Path -LiteralPath $rollbackRoot) { Remove-Item -LiteralPath $rollbackRoot -Recurse -Force -ErrorAction Stop }
     $newPackageNames = @($packagePlan.NewProtectionNames -join ',')
-    Write-Output "PASS protection installed, CAT members verified, v3 activation confirmed, package delta recorded ($newPackageNames): $ntImage / $ntDataRoot"
+    Write-Output "PASS protection installed, CAT members verified, v4 activation confirmed, package delta recorded ($newPackageNames): $ntImage / $ntDataRoot"
 } catch {
     $failure = $_
     if (!$configurationTouched) {

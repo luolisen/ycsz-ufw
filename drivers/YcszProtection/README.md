@@ -64,3 +64,11 @@ INF 中的 minifilter altitude `385200.1234` 只是源码阶段占位值；提�
 只有 `IOCTL_YCP_COMMIT_INITIALIZE` 在 deadline 内看到无失败且 marked stream 数覆盖第二次扫描的 expected entries 时才发布 `ACTIVE`；扫描失败、应答丢失、服务进程退出或 120 秒超时通过 `IOCTL_YCP_ABORT_INITIALIZE` 或下一次 Begin 清理初始化上下文。稳定 `ACTIVE` 实例不会被新的 Begin 替换，旧 v2 请求也不会静默按新语义处理。状态 ABI 变为 4288 字节。
 
 `scripts/test-driver-control.py` 现在还编译 `drivers/YcszProtection/tests/initialization_lifecycle.c`，覆盖 Begin 未提前发布 Active、失败计数阻止 Commit、Abort 清理、稳定 Active 不被替换、命名空间边界和超时恢复。该桩与 C# 73/73 回归只能证明便携状态/协议逻辑；WDK 编译、正式签名/唯一 altitude、安装/加载及真实 Windows 动态阻断仍必须在隔离 Windows 完成。
+
+## 第五轮逐文件覆盖证明（2026-09-12）
+
+协议已升级为 v4。第一次句柄级 preflight 生成固定上限的唯一 manifest，服务在 `BEGIN_INITIALIZE` 后逐项发送 `IOCTL_YCP_DECLARE_INITIALIZATION_ENTRY`；驱动以卷序列号和 `FILE_INTERNAL_INFORMATION.IndexNumber` 建立本轮期望集合。第二次 preflight 的可信服务 CREATE post-operation 从真实文件对象取得同一身份并只标记匹配的未观察成员；重复观察不增加 `MarkedEntries`，未知身份、身份查询失败和声明失败阻止 Commit。
+
+卷序列号在 minifilter `InstanceSetupCallback` 的 PASSIVE_LEVEL 阶段缓存到 instance context，post-create 不在不确定 IRQL 下查询卷信息。`YCP_MAX_INITIALIZATION_ENTRIES` 为明确资源上限；Abort、超时、服务退出和卸载释放覆盖表。`initialization_lifecycle.c` 直接 include 驱动实际的 `ycsz_initialization_coverage.c`，覆盖重复/缺口、旧轮次、多卷相同 FileIndex、失败和上限，不再使用独立状态模型冒充生产实现。
+
+post-create 的覆盖记账另绑定 pre-create 捕获的目标 `PEPROCESS` 引用、单调初始化 generation 和 nonce；旧轮次在 Abort/超时后延迟完成，也不能向新轮次覆盖表记账。completion context 分配失败或实际身份标记失败只让当前轮次无法提交，draining/reparse/失败路径均释放引用和上下文，不把缺少上下文扩大为无关 I/O 的全局拒绝。新增便携回归直接提取生产快照/记账函数，验证旧轮拒绝、同轮去重、owner 隔离、失败和引用平衡。

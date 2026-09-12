@@ -86,6 +86,19 @@ with tempfile.TemporaryDirectory(prefix='ycsz-control-test-') as tmp:
     subprocess.run([str(work / 'namespace-test')], check=True)
 
     shutil.copy2(driver / 'tests/initialization_lifecycle.c', work)
+    shutil.copy2(driver / 'ycsz_initialization_coverage.c', work)
+    shutil.copy2(driver / 'ycsz_initialization_coverage.h', work)
     subprocess.run(compiler + ['-std=c11', '-Wall', '-Wextra', '-Werror',
                               str(work / 'initialization_lifecycle.c'), '-o', str(work / 'initialization-test')], check=True)
     subprocess.run([str(work / 'initialization-test')], check=True)
+
+    (work / 'initialization_round_extracted.inc').write_text(
+        extract('YcpTargetMatchesLocked', 'BOOLEAN') +
+        extract('YcpInitializationValidLocked', 'BOOLEAN') +
+        extract('YcpCaptureInitializationSnapshot', 'BOOLEAN') +
+        extract('YcpReleaseInitializationSnapshot', 'VOID') +
+        extract('YcpRecordInitializationStream', 'VOID'))
+    shutil.copy2(driver / 'tests/initialization_round_binding.c', work)
+    subprocess.run(compiler + ['-std=c11', '-Wall', '-Wextra', '-Werror',
+                              str(work / 'initialization_round_binding.c'), '-o', str(work / 'initialization-round-test')], check=True)
+    subprocess.run([str(work / 'initialization-round-test')], check=True)

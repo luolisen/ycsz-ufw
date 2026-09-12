@@ -40,19 +40,23 @@ function Invoke-StaticChecks {
     $protocol = Join-Path $driver 'ycsz_protection_protocol.h'
     $kernel = Join-Path $driver 'ycsz_protection.c'
     $filter = Join-Path $driver 'ycsz_minifilter.c'
+    $coverage = Join-Path $driver 'ycsz_initialization_coverage.c'
+    $coverageHeader = Join-Path $driver 'ycsz_initialization_coverage.h'
     $transport = Join-Path $repo 'src\Ycsz.Core\SelfProtectionDeviceTransport.cs'
     $core = Join-Path $repo 'src\Ycsz.Core\SelfProtection.cs'
     $preflight = Join-Path $repo 'src\Ycsz.Core\SelfProtectionFilePreflight.cs'
     $app = Join-Path $repo 'src\Ycsz.App\Program.cs'
     $install = Join-Path $repo 'scripts\Install-Protection.ps1'
     $validation = Join-Path $repo 'scripts\Protection-Validation.ps1'
-    foreach ($path in @($protocol,$kernel,$filter,$transport,$core,$preflight,$app,$install,$validation)) {
+    foreach ($path in @($protocol,$kernel,$filter,$coverage,$coverageHeader,$transport,$core,$preflight,$app,$install,$validation)) {
         if (!(Test-Path -LiteralPath $path -PathType Leaf)) { Add-Result 'static source inventory' 'FAIL' "missing $path"; return }
     }
     $checks = @(
-        @('protocol version 3', $protocol, 'YCP_PROTOCOL_VERSION              3u'),
+        @('protocol version 4', $protocol, 'YCP_PROTOCOL_VERSION              4u'),
+        @('initialization entry limit', $protocol, 'YCP_MAX_INITIALIZATION_ENTRIES'),
         @('initialization timeout', $protocol, 'YCP_INITIALIZATION_TIMEOUT_SECONDS'),
         @('begin initialization IOCTL', $protocol, 'IOCTL_YCP_BEGIN_INITIALIZE'),
+        @('declare initialization entry IOCTL', $protocol, 'IOCTL_YCP_DECLARE_INITIALIZATION_ENTRY'),
         @('commit initialization IOCTL', $protocol, 'IOCTL_YCP_COMMIT_INITIALIZE'),
         @('abort initialization IOCTL', $protocol, 'IOCTL_YCP_ABORT_INITIALIZE'),
         @('initialization commit request', $protocol, 'YCP_INITIALIZE_COMMIT_REQUEST'),
@@ -66,9 +70,17 @@ function Invoke-StaticChecks {
         @('trusted writer gate', $kernel, 'YcpIsTrustedWriter'),
         @('initialization state query', $kernel, 'YcpProtectionIsInitializing'),
         @('initialization stream accounting', $kernel, 'YcpRecordInitializationStream'),
+        @('initialization round snapshot', $kernel, 'YcpCaptureInitializationSnapshot'),
+        @('initialization round cleanup', $kernel, 'YcpReleaseInitializationSnapshot'),
+        @('initialization generation barrier', $kernel, 'InitializationGeneration'),
         @('initialization commit handler', $kernel, 'YcpCommitInitialization'),
         @('initialization abort handler', $kernel, 'YcpAbortInitialization'),
         @('initialization failure accounting', $kernel, 'InitializationFailures'),
+        @('initialization coverage declaration', $kernel, 'YcpInitializationCoverageDeclare'),
+        @('initialization coverage observation', $kernel, 'YcpInitializationCoverageObserve'),
+        @('initialization coverage commit predicate', $coverage, 'YcpInitializationCoverageCanCommit'),
+        @('instance volume identity setup', $filter, 'YcpInstanceSetup'),
+        @('instance volume serial cache', $filter, 'FltQueryVolumeInformation'),
         @('stream identity context', $filter, 'YCP_STREAM_CONTEXT'),
         @('stream identity query', $filter, 'FileInternalInformation'),
         @('stream context lookup', $filter, 'FltGetStreamContext'),
@@ -77,8 +89,9 @@ function Invoke-StaticChecks {
         @('filter reference release', $filter, 'FltObjectDereference'),
         @('paging write compatibility', $filter, 'IRP_PAGING_IO'),
         @('reparse gate', $filter, 'FSCTL_SET_REPARSE_POINT'),
-        @('v3 user ABI', $transport, 'StateDataRoot'),
+        @('v4 user ABI', $transport, 'StateDataRoot'),
         @('begin initialize user transport', $transport, 'BeginInitialize'),
+        @('declare initialize user transport', $transport, 'DeclareInitializationEntry'),
         @('commit initialize user transport', $transport, 'CommitInitialize'),
         @('abort initialize user transport', $transport, 'AbortInitialize'),
         @('activation identity preflight', $preflight, 'GetFileInformationByHandle'),
@@ -148,7 +161,7 @@ function Require-DynamicPreconditions {
     $image = [IO.Path]::GetFullPath($ServiceImagePath)
     if ($image -notlike ($fixture.TrimEnd('\') + '\*')) { throw 'ServiceImagePath is outside the disposable fixture.' }
     $probe = & $image --protection-status 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) { throw "The harness is Running but v3 activation was not confirmed: $probe" }
+    if ($LASTEXITCODE -ne 0) { throw "The harness is Running but v4 activation was not confirmed: $probe" }
 }
 
 function Invoke-DynamicChecks {
