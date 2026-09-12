@@ -3,7 +3,7 @@
 日期：2026-09-13  
 范围依据：`docs/LUNA-FULL-DELIVERY-2026-09-12.md:14-24`  
 审计工作树：`codex/luna-full-delivery-20260912`  
-可复核 CI：[`34713689449`](https://github.com/luolisen/ycsz-ufw/actions/runs/34713689449)，对应提交 `6fddfcb5abe3b8f170c08fde8a2f3c2754e024f3`。该运行通过，但仍按脚本输出保留 `BLOCKED`；CI 不是正式签名、驱动加载或生产验收证据。
+可复核 CI：[`34714008233`](https://github.com/luolisen/ycsz-ufw/actions/runs/34714008233)，对应提交 `0a0d8576c51ff3f5ea2e809b5e3dadb6cb8ca1f5`。该运行通过，但仍按脚本输出保留 `BLOCKED`；CI 不是正式签名、驱动加载或生产验收证据。
 
 ## 结论口径
 
@@ -21,7 +21,7 @@
 
 - 要求：真实 WDK 编译、INF/SYS/日志、签名、CAT 和 altitude 实际状态。
 - 位置：`drivers/YcszProtection/YcszProtection.vcxproj`、`drivers/YcszProtection/YcszProtection.inf`、`.github/workflows/windows-build.yml:21-58`、`drivers/YcszProtection/README.md:20-36`。
-- 证据：CI `34713169738` 的 WDK Release x64 步骤生成 `YcszProtection.sys`、stamped INF 和 CAT；同一运行的 `InfVerif` 输出 `INF is VALID`。`Test-ProtectionDriver -Mode Static` 的源码/ABI/安装回滚门禁无 `FAIL`。
+- 证据：CI `34714008233` 的 WDK Release x64 步骤生成 `YcszProtection.sys`、stamped INF 和 CAT；同一运行的 `InfVerif` 输出 `INF is VALID`。`Test-ProtectionDriver -Mode Static` 的源码/ABI/安装回滚门禁无 `FAIL`。
 - 状态：**部分完成**。
 - 未完成/阻塞：CI 明确是 unsigned driver 流程；`YcszProtection.inf` 的 `385200.1234` 仍是占位 altitude。没有正式、唯一 altitude、适配目标系统的签名 CAT/驱动，也没有安装/加载结果，因此不能交付生产驱动。
 
@@ -85,7 +85,7 @@
 
 - 要求：文档、安装恢复、证据、版本和发布包一致；不把未验收驱动放入正式安装包。
 - 位置：`README.md:1-21,71-99,101-132,142-158`；`drivers/YcszProtection/README.md:1-18,20-48`；`docs/validation/EIGHTH-ROUND-DESIGN-2026-09-13.md`；`docs/validation/TWO-PHASE-DYNAMIC-HARNESS-2026-09-13.md`；本文件。
-- 证据：README 仍明确 v1.0.1、双运行时包、管理员恢复、驱动默认不构建/不随安装器生成，以及签名、altitude、动态验收未完成；`Test-Windows -Mode Static` 通过默认安装器不包含未验证驱动的门禁；本轮新增的句柄绑定清理和两阶段流程均有单独设计/操作文档。最终 CI `34713689449` 的所有工作流步骤通过。
+- 证据：README 仍明确 v1.0.1、双运行时包、管理员恢复、驱动默认不构建/不随安装器生成，以及签名、altitude、动态验收未完成；`Test-Windows -Mode Static` 通过默认安装器不包含未验证驱动的门禁；本轮新增的句柄绑定清理和两阶段流程均有单独设计/操作文档。最终 CI `34714008233` 的所有工作流步骤通过。
 - 状态：**部分完成，等待主任务最终发布审查**。
 - 未完成/阻塞：正式签名/加载证据、动态验收产物和生产发布批准仍缺失；在这些条件满足前，只能发布不包含自保护驱动的已验证应用包，不能把 README 的源码状态改写为“驱动已完成”。
 
