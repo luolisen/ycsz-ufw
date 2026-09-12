@@ -308,6 +308,11 @@ YcpTrustedNamespaceMutationAllowed(
         Data->Iopb->MajorFunction == IRP_MJ_FILE_SYSTEM_CONTROL) {
         return FALSE;
     }
+    // CREATE has a source name but no rename/link destination. The caller
+    // checks initialization and ancestor restrictions before this exception.
+    if (Data->Iopb->MajorFunction == IRP_MJ_CREATE) {
+        return SourceProtected;
+    }
     // A trusted content writer may rename/link only inside the already
     // identified product namespace.  This prevents the service itself from
     // creating an alias which later bypasses the stream context.

@@ -71,6 +71,7 @@ with tempfile.TemporaryDirectory(prefix='ycsz-control-test-') as tmp:
 
     (work / 'precreate_extracted.inc').write_text(
         extract_filter_boolean('YcpCreateChangesNamespace') +
+        extract_filter_boolean('YcpTrustedNamespaceMutationAllowed') +
         extract_filter_boolean('YcpPreOperationFile','FLT_PREOP_CALLBACK_STATUS'))
     shutil.copy2(driver / 'tests/precreate_dispatch.c', work)
     subprocess.run(compiler + ['-std=c11', '-Wall', '-Wextra', '-Werror',

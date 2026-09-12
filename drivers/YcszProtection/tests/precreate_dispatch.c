@@ -56,7 +56,6 @@ static int YcpDestinationIsProtected(DATA *d,void *o,int *r) { (void)d;(void)o;*
 static void FltReleaseFileNameInformation(NAME *n) { (void)n; }
 static int YcpIsTrustedWriter(DATA *d) { (void)d; return trusted; }
 static int YcpIsNamespaceMutation(DATA *d) { return d->Iopb->MajorFunction==IRP_MJ_SET_INFORMATION || YcpCreateChangesNamespace(d); }
-static int YcpTrustedNamespaceMutationAllowed(DATA *d,int s,int t,int r) { (void)d;(void)s;(void)t;(void)r;return 0; }
 static int YcpDenyMutation(DATA *d) { (void)d;return FLT_PREOP_COMPLETE; }
 #include "precreate_extracted.inc"
 int main(void) {
@@ -93,6 +92,13 @@ int main(void) {
     assert(YcpPreOperationFile(&data,NULL,&completion)==FLT_PREOP_SUCCESS_WITH_CALLBACK);
     product=1; op.Parameters.Create.Options=1UL<<24;
     assert(YcpPreOperationFile(&data,NULL,&completion)==FLT_PREOP_SUCCESS_WITH_CALLBACK);
-    puts("PASS 13 pre-operation dispatch scenarios; namespace-only creates guarded, pre-create context access excluded, unrelated/paging I/O preserved");
+    active=1; initializing=0; trusted=1;
+    op.Parameters.Create.Options=(ULONG)FILE_CREATE<<24;
+    assert(YcpPreOperationFile(&data,NULL,&completion)==FLT_PREOP_SUCCESS_WITH_CALLBACK);
+    trusted=0;
+    assert(YcpPreOperationFile(&data,NULL,&completion)==FLT_PREOP_COMPLETE);
+    trusted=1; product=0; ancestor=1;
+    assert(YcpPreOperationFile(&data,NULL,&completion)==FLT_PREOP_COMPLETE);
+    puts("PASS 16 pre-operation dispatch scenarios; trusted active creates allowed, initializing and untrusted creates guarded, ancestor restrictions preserved");
     return 0;
 }
