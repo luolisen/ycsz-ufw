@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
@@ -260,6 +261,11 @@ namespace Ycsz {
                         Fail(second==null?"第二次文件身份 preflight 未返回结果":second.Summary);
                         return false;
                     }
+                    if(second==null || !SameInitializationEntries(first.InitializationEntries,second.InitializationEntries)) {
+                        TryAbortInitialization(utcNow);
+                        Fail("两次扫描的文件身份集合不一致，不能确认启用保护");
+                        return false;
+                    }
                     var commitReply=transport.Send(SelfProtectionRequest.CreateCommit(registeredIdentity,first.InitializationEntries.Count,utcNow));
                     bool commitAccepted=commitReply!=null && commitReply.Accepted && commitReply.DriverLoaded && commitReply.Phase==SelfProtectionPhase.Active;
                     bool accepted=ApplyActiveReply(commitReply);
@@ -270,6 +276,18 @@ namespace Ycsz {
                 }
                 catch(Exception e) { if(initializationStarted) TryAbortInitialization(utcNow); Fail(e.Message); return false; }
             }
+        }
+
+        static bool SameInitializationEntries(IList<SelfProtectionInitializationEntry> first,IList<SelfProtectionInitializationEntry> second) {
+            if(first==null || second==null || first.Count!=second.Count) return false;
+            var members=new HashSet<string>(StringComparer.Ordinal);
+            foreach(var entry in first) {
+                if(entry==null || !members.Add(entry.VolumeSerial.ToString("X16")+":"+entry.FileIndex.ToString("X16")+":"+entry.IsDirectory)) return false;
+            }
+            foreach(var entry in second) {
+                if(entry==null || !members.Remove(entry.VolumeSerial.ToString("X16")+":"+entry.FileIndex.ToString("X16")+":"+entry.IsDirectory)) return false;
+            }
+            return members.Count==0;
         }
 
         public bool RegisterTray(ProtectionIdentity trayIdentity,DateTime utcNow) {

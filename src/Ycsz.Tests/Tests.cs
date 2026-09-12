@@ -182,6 +182,20 @@ static class Tests {
             var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromMinutes(5),()=> ++scans==1?GoodPreflight():SelfProtectionFilePreflight.Evaluate(new[] { Observation("alias",7,12,false,true,false),Observation("state",7,12,false,true,false) }));
             Is(!coordinator.Activate(DateTime.UtcNow) && coordinator.Status.State==SelfProtectionState.Failed && !coordinator.Status.DriverLoaded && transport.Requests.Count==3 && transport.Requests[0].Operation==SelfProtectionOperation.BeginInitialize && transport.Requests[1].Operation==SelfProtectionOperation.DeclareInitializationEntry && transport.Requests[2].Operation==SelfProtectionOperation.AbortInitialize);
         });
+        Test("successful second scan with changed identities aborts before commit",()=> {
+            var changed=new[] {
+                new[] { Observation("state",7,13,false,true,false) },
+                new[] { Observation("state",8,12,false,true,false) },
+                new[] { Observation("state",7,12,false,true,false),Observation("new",7,13,false,true,false) }
+            };
+            foreach(var observations in changed) {
+                int scans=0;
+                var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation });
+                var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromMinutes(5),()=> ++scans==1?GoodPreflight():SelfProtectionFilePreflight.Evaluate(observations));
+                Is(!coordinator.Activate(DateTime.UtcNow) && coordinator.Status.State==SelfProtectionState.Failed);
+                Is(transport.Requests.Count==3 && transport.Requests[2].Operation==SelfProtectionOperation.AbortInitialize);
+            }
+        });
         Test("commit failure aborts initialization without changing a stable active target",()=> {
             var full=SelfProtectionCapability.ProcessTermination|SelfProtectionCapability.FileMutation; var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=full }); transport.FailCommit=true;
             var coordinator=new SelfProtectionCoordinator(transport,Identity,(session,op)=>true,TimeSpan.FromMinutes(5),()=>GoodPreflight());
