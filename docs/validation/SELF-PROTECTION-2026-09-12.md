@@ -168,3 +168,13 @@
 
 - 本轮真实 Windows CI 已完成：分支 `codex/luna-full-delivery-20260912` 的实现提交 `b9f96f3` 对应 [GitHub Actions 运行 34659582962](https://github.com/luolisen/ycsz-ufw/actions/runs/34659582962)，运行时长约 5 分 18 秒并成功。`windows-2025-vs2026` runner 的 WDK Release x64 驱动/INF 构建、`InfVerif`、C# 编译/测试/打包、Windows PowerShell 5.1 解析与静态门禁、驱动静态门禁、维护输入校验、net48、WFP 和隔离 Windows 安全集成步骤均通过。
 - 第四轮仍明确 BLOCKED：没有正式签名、唯一 altitude、安装/加载 unsigned 驱动、强制终止/挂起、已有句柄/映射/硬链接/重解析点动态阻断或重启后证据。没有生产驱动安装、加载、重启、注销、关机、账户/网络/Lenovo/SecureBoot/HVCI 变更。
+
+### 第五轮：逐文件覆盖与初始化轮次绑定（2026-09-12）
+
+本轮先提交设计 `docs/validation/FIFTH-ROUND-DESIGN-2026-09-12.md`（`db32aef`），再提交逐文件覆盖实现 `1fb8ed9`，并在真实 WDK 编译反馈后提交内核类型兼容修复 `761ce33`。父任务已有的三个未跟踪审查文档未暂存、未修改。
+
+- 协议升级到 v4：Begin 携带第一次 preflight 的 manifest 数量，新增 `IOCTL_YCP_DECLARE_INITIALIZATION_ENTRY`；每项以卷序列号和 `FILE_INTERNAL_INFORMATION.IndexNumber` 固定识别，Activate/Entry/Status x64 ABI 分别为 3160/56/4296 字节。驱动使用有上限的生产哈希覆盖表，唯一声明/唯一观察才增加覆盖；重复、未知身份、flags/标记失败和容量失败不能越过 Commit。
+- minifilter 在 instance setup 的 PASSIVE_LEVEL 阶段缓存卷序列号；post-create 使用实际 FileObject 的文件 ID。pre-create 同一状态快照捕获 owner `PEPROCESS` 引用、单调 generation 和 nonce，post-create 只接受该不可变快照；Abort/超时后的旧轮次回调即使延迟到新 Begin 后，也不能修改新覆盖表。generation 到 `MAXULONGLONG` 时显式拒绝新轮次，不回绕。
+- 便携回归直接编译/提取生产实现：覆盖表的重复/缺口、旧轮次、多卷同 FileIndex、失败与引用释放通过；新增 round-binding 回归验证 A 轮 pre → Abort/新轮 Begin → A 轮 post 时 B 轮覆盖仍为零，同轮去重、owner 隔离、标记失败和对象引用平衡通过。`python3 scripts/test-driver-control.py` 全部通过，C# Core/App/Tests 临时目录 `74/74` 通过；`git diff --check` 与 shell 语法检查通过。
+- 首次 WDK CI `34664135846` 暴露了 `<stdint.h>` 与 WDK CRT 的宏冲突及 minifilter 指针 typedef 错误；`761ce33` 修复后，最终实现 CI [34664340663](https://github.com/luolisen/ycsz-ufw/actions/runs/34664340663) 在 `windows-2025-vs2026` runner 全部通过：Release x64 WDK、InfVerif、C# 编译/测试/打包、PowerShell 解析与静态门禁、驱动验证矩阵、维护输入、net48、WFP 和 disposable Windows 安全集成。
+- 仍明确 BLOCKED：CI 产物保持 unsigned；没有正式签名、唯一 altitude、安装/加载驱动、生产系统修改、重启，亦没有宣称真实终止/挂起、已有句柄写入、映射写回、硬链接/重解析点或用户会话/PID 重启动态证据。映射写回仍是显式未证明条件。
