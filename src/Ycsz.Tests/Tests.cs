@@ -211,6 +211,12 @@ static class Tests {
             var coordinator=new SelfProtectionCoordinator(transport,Identity, (session,op)=>true, TimeSpan.FromMinutes(5),()=>GoodPreflight());
             Is(!coordinator.Activate(DateTime.UtcNow) && coordinator.Status.State==SelfProtectionState.Failed && !coordinator.Status.DriverLoaded && coordinator.Status.UserText().Contains("未启用"));
         });
+        Test("driverless status is healthy but never claims kernel protection",()=> {
+            var status=SelfProtectionStatus.Driverless(false,DateTime.MinValue);
+            Is(status.DriverlessMode && !status.DriverLoaded && !status.ProcessProtectionActive && !status.FileProtectionActive && status.UserText().Contains("无驱动模式") && status.UserText().Contains("不承诺抵抗完整管理员"));
+            status=SelfProtectionStatus.Driverless(true,DateTime.UtcNow.AddMinutes(5));
+            Is(status.DriverlessMaintenanceAuthorized && status.UserText().Contains("管理员维护窗口已授权") && !status.UserText().Contains("内核自保护已启用"));
+        });
         Test("self protection requires all capabilities before activation",()=> {
             var transport=new FakeProtectionTransport(new SelfProtectionReply { Accepted=true,DriverLoaded=true,Capabilities=SelfProtectionCapability.ProcessTermination });
             var coordinator=new SelfProtectionCoordinator(transport,Identity, (session,op)=>true, TimeSpan.FromMinutes(5),()=>GoodPreflight());

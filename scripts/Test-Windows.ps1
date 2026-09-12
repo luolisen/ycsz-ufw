@@ -30,11 +30,11 @@ if ($Mode -eq 'Static') {
         $status=Get-Content (Join-Path $repo 'src\Ycsz.Core\SelfProtection.cs') -Raw
         $ui=Get-Content (Join-Path $repo 'src\Ycsz.App\Ui.cs') -Raw
         $readme=Get-Content (Join-Path $repo 'README.md') -Raw
-        foreach ($needle in @('BeginDriverlessMaintenance','EndDriverlessMaintenance','SelfProtectionStatus.Driverless','管理员维护窗口已授权','!protectedService','protectionReady')) {
+        foreach ($needle in @('BeginDriverlessMaintenance','EndDriverlessMaintenance','SelfProtectionStatus.Driverless','DriverlessMaintenanceAuthorized','!protectedService','protectionReady')) {
             if ($program -notmatch [regex]::Escape($needle) -and $status -notmatch [regex]::Escape($needle)) { throw "Driverless application maintenance gate missing: $needle" }
         }
-        if ($program -match '!protectedService' -and $program -match 'selfProtection==null' -and $program -match 'CanStopForRequest') { throw 'Driverless authenticated stop remains blocked by the historical driver guard' }
-        foreach ($needle in @('无驱动模式','不承诺抵抗完整管理员','管理员维护停服')) {
+        if ($program -match [regex]::Escape('!protectedService || selfProtection==null || !CanStopForRequest')) { throw 'Driverless authenticated stop remains blocked by the historical driver guard' }
+        foreach ($needle in @('DriverlessMode','LocalSystem','SCM')) {
             if ($ui -notmatch [regex]::Escape($needle) -and $readme -notmatch [regex]::Escape($needle)) { throw "Driverless wording missing: $needle" }
         }
         if ($status -notmatch 'DriverlessMode' -or $status -notmatch 'DriverlessMaintenanceAuthorized') { throw 'Driverless status is not represented separately from failed driver activation' }
