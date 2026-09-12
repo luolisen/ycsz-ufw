@@ -1,5 +1,6 @@
 // Disposable Windows CI fixture only. Never ship this probe in the installer.
 using System;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
@@ -7,6 +8,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Security.Cryptography.X509Certificates;
+using System.Threading;
 using Ycsz;
 
 static class SecurityProbe {
@@ -28,7 +30,7 @@ static class SecurityProbe {
                 try { s.CertificateHash=Crypto.Sha256(cert.RawData); } finally { cert.Reset(); }
                 Store.Save("settings.bin",s); Store.Save("manager.bin",new ManagerState());
                 Check("isolated manager configuration initialized",true);
-            } else if(args[0]=="--checks") { StandardUser(); Registration(); ProcessDetection(); }
+            } else if(args[0]=="--checks") { StandardUser(); DriverlessMaintenance(); Registration(); ProcessDetection(); }
             else if(args[0]=="--persistence") {
                 string token=Ipc.Call(new Packet { Op="login",Password=TestPassword }).Token;
                 var nodes=Json.Decode<System.Collections.Generic.List<ClientState>>(Call("list",token).Data);
@@ -46,7 +48,9 @@ static class SecurityProbe {
             Check("fixture identity is a standard user",!new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator));
             Denied("standard user cannot read protected credentials",()=> { using(File.Open(Store.PathFor("settings.bin"),FileMode.Open,FileAccess.Read)) {} });
             Denied("standard user cannot overwrite installed executable",()=> { using(File.Open(Path.Combine(Store.Bin,"Ycsz.exe"),FileMode.Open,FileAccess.Write)) {} });
+            Denied("standard user cannot delete installed helper",()=> File.Delete(Path.Combine(Store.Bin,"System.ps1")));
             Denied("standard user cannot overwrite PowerShell helper",()=> { using(File.Open(Path.Combine(Store.Bin,"System.ps1"),FileMode.Open,FileAccess.Write)) {} });
+            Denied("standard user cannot delete protected credentials",()=> File.Delete(Store.PathFor("settings.bin")));
             IntPtr scm=OpenSCManager(null,null,1); if(scm==IntPtr.Zero) throw new Exception("SCM query unavailable");
             try { foreach(uint access in new uint[]{0x20,2,0x10000}) {
                 IntPtr service=OpenService(scm,"YcszFirewall",access); int error=Marshal.GetLastWin32Error(); if(service!=IntPtr.Zero) CloseServiceHandle(service);
@@ -62,6 +66,30 @@ static class SecurityProbe {
             Check("password-authorized standard user management works",Call("list",session).Ok);
             Call("logout",session); Rejected("logout invalidates management session",()=>Call("list",session));
         } } finally { CloseHandle(token); }
+    }
+    static void DriverlessMaintenance() {
+        var initial=Call("self-protection-status");
+        Check("fixture reports supported driverless protection mode",initial.Ok && initial.Status.Contains("无驱动模式") && !initial.Status.Contains("内核自保护已启用"));
+        string session=Call("login",null).Token;
+        bool stopped=false;
+        try {
+            var entered=Call("self-protection-enter",session);
+            Check("authenticated driverless maintenance opens bounded window",entered.Ok && entered.Status.Contains("管理员维护窗口已授权"));
+            Check("driverless maintenance accepts no-op unload preparation",Call("self-protection-prepare-unload",session).Ok);
+            Check("authenticated driverless maintenance can close",Call("self-protection-exit",session).Ok);
+            Rejected("service stop requires an active maintenance window",()=>Call("self-protection-stop",session));
+            Check("driverless maintenance can be reopened",Call("self-protection-enter",session).Ok);
+            Check("driverless maintenance revalidates before stop",Call("self-protection-prepare-unload",session).Ok);
+            Check("authenticated driverless stop request accepted",Call("self-protection-stop",session).Ok);
+            WaitForServiceState(false);
+            stopped=true;
+            StartFixtureService();
+            WaitForServiceState(true);
+            Check("authenticated maintenance stop leaves SCM recovery path usable",true);
+        } finally {
+            if(stopped || QueryFixtureServiceState()!=4) { StartFixtureService(); WaitForServiceState(true); }
+            try { Call("logout",session); } catch { }
+        }
     }
     static void ProcessDetection() {
         foreach(var name in new[]{"v2ray.exe","safe-fixture.exe"}) {
@@ -112,9 +140,33 @@ static class SecurityProbe {
     }
     static Packet Register(Enrollment bundle,Enrollment node) { return Wire.Heartbeat(bundle,new Packet { Op="register",Id=node.ClientId,Token=bundle.Token,Data=node.Token,BundleId=bundle.BundleId,Name=node.Name }); }
     static Packet Beat(string name) { return new Packet { Op="heartbeat",Name=name,Status="test fixture",Events=new System.Collections.Generic.List<SecurityEvent>(),Network=new NetworkSnapshot { HostsBase64="" } }; }
+    static void WaitForServiceState(bool running) {
+        DateTime deadline=DateTime.UtcNow.AddSeconds(30); uint expected=running?4u:1u;
+        while(DateTime.UtcNow<deadline) { if(QueryFixtureServiceState()==expected) return; Thread.Sleep(250); }
+        throw new Exception("YcszFirewall did not reach "+(running?"Running":"Stopped"));
+    }
+    static uint QueryFixtureServiceState() {
+        IntPtr scm=OpenSCManager(null,null,1); if(scm==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+        try {
+            IntPtr service=OpenService(scm,"YcszFirewall",4); if(service==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+            try { NativeServiceStatus status; if(!QueryServiceStatus(service,out status)) throw new Win32Exception(Marshal.GetLastWin32Error()); return status.CurrentState; }
+            finally { CloseServiceHandle(service); }
+        } finally { CloseServiceHandle(scm); }
+    }
+    static void StartFixtureService() {
+        IntPtr scm=OpenSCManager(null,null,1); if(scm==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+        try {
+            IntPtr service=OpenService(scm,"YcszFirewall",0x0010); if(service==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+            try { if(!StartService(service,0,IntPtr.Zero)) { int error=Marshal.GetLastWin32Error(); if(error!=1056) throw new Win32Exception(error); } }
+            finally { CloseServiceHandle(service); }
+        } finally { CloseServiceHandle(scm); }
+    }
+    [StructLayout(LayoutKind.Sequential)] struct NativeServiceStatus { public uint ServiceType,CurrentState,ControlsAccepted,Win32ExitCode,ServiceSpecificExitCode,CheckPoint,WaitHint; }
     [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool LogonUser(string user,string domain,string password,int type,int provider,out IntPtr token);
     [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr OpenSCManager(string machine,string database,uint access);
     [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr OpenService(IntPtr scm,string name,uint access);
+    [DllImport("advapi32.dll",SetLastError=true)] static extern bool QueryServiceStatus(IntPtr service,out NativeServiceStatus status);
+    [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool StartService(IntPtr service,int argc,IntPtr argv);
     [DllImport("advapi32.dll")] static extern bool CloseServiceHandle(IntPtr handle);
     [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,int pid);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);

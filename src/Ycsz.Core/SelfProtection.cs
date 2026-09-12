@@ -181,6 +181,12 @@ namespace Ycsz {
     public sealed class SelfProtectionStatus {
         public SelfProtectionState State;
         public bool DriverLoaded;
+        // The default product delivery intentionally has no kernel driver.
+        // Keep that state separate from a failed driver activation so the UI
+        // cannot present the supported ACL/SCM mode as a broken product or as
+        // kernel protection.
+        public bool DriverlessMode;
+        public bool DriverlessMaintenanceAuthorized;
         // This is an activation/writeback precondition, not a claim that the
         // minifilter can deny arbitrary Cache Manager mapped writes.
         public bool MappingWritebackConditionMet;
@@ -194,8 +200,13 @@ namespace Ycsz {
         public bool ServiceStopProtectionActive { get { return (Capabilities&SelfProtectionCapability.ServiceStop)!=0; } }
 
         public static SelfProtectionStatus Unavailable(string reason) { return new SelfProtectionStatus { State=SelfProtectionState.Unavailable,Failure=reason??"驱动未加载" }; }
-        public SelfProtectionStatus Copy() { return new SelfProtectionStatus { State=State,DriverLoaded=DriverLoaded,MappingWritebackConditionMet=MappingWritebackConditionMet,Capabilities=Capabilities,Failure=Failure,MaintenanceLeaseId=MaintenanceLeaseId,MaintenanceUntilUtc=MaintenanceUntilUtc }; }
+        public static SelfProtectionStatus Driverless(bool maintenanceAuthorized,DateTime maintenanceUntilUtc) { return new SelfProtectionStatus { State=SelfProtectionState.Unavailable,DriverlessMode=true,DriverlessMaintenanceAuthorized=maintenanceAuthorized,MaintenanceUntilUtc=maintenanceUntilUtc }; }
+        public SelfProtectionStatus Copy() { return new SelfProtectionStatus { State=State,DriverLoaded=DriverLoaded,DriverlessMode=DriverlessMode,DriverlessMaintenanceAuthorized=DriverlessMaintenanceAuthorized,MappingWritebackConditionMet=MappingWritebackConditionMet,Capabilities=Capabilities,Failure=Failure,MaintenanceLeaseId=MaintenanceLeaseId,MaintenanceUntilUtc=MaintenanceUntilUtc }; }
         public string UserText() {
+            if(DriverlessMode) {
+                if(DriverlessMaintenanceAuthorized) return "无驱动模式：普通学生账户权限保护与服务异常恢复已启用；管理员维护窗口已授权（最长 5 分钟）；不承诺抵抗完整管理员或离线修改";
+                return "无驱动模式：普通学生账户权限保护与服务异常恢复已启用；不承诺抵抗完整管理员或离线修改";
+            }
             if(State==SelfProtectionState.Active) return "内核自保护已启用（进程句柄/文件过滤；服务停止需认证维护）"+(MappingWritebackConditionMet?"":"；可写映射写回条件未满足");
             if(State==SelfProtectionState.Maintenance) return "内核自保护维护窗口已授权（最长 15 分钟；安装目录与 ProgramData 文件过滤仍在）"+(MappingWritebackConditionMet?"":"；可写映射写回条件未满足");
             if(State==SelfProtectionState.Degraded) return "内核自保护不完整，未满足全部保护能力";

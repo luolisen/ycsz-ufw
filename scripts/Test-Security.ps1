@@ -4,6 +4,7 @@ if (!$DisposableVm -and !($env:GITHUB_ACTIONS -eq 'true' -and $env:RUNNER_ENVIRO
 $repo = Split-Path $PSScriptRoot -Parent
 $data = Join-Path $env:ProgramData 'YcszFirewall'
 if ((Get-Service YcszFirewall -ErrorAction SilentlyContinue) -or (Test-Path $data)) { throw 'Refusing existing service or configuration.' }
+if ((Get-Service YcszProtection -ErrorAction SilentlyContinue) -or (Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Services\YcszProtection')) { throw 'Refusing an environment with the historical kernel-driver service registered.' }
 if (Get-NetTCPConnection -State Listen -LocalPort 17443 -ErrorAction SilentlyContinue) { throw 'Port 17443 already used.' }
 $suffix = [guid]::NewGuid().ToString('N').Substring(0,10)
 $fixture = Join-Path $env:ProgramFiles ('Ycsz-Test-' + $suffix)

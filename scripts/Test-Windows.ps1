@@ -25,6 +25,37 @@ if ($Mode -eq 'Static') {
         if ($update -notmatch 'Stop-InstalledServiceAndCloseUi') { throw 'update does not stop service and close UI' }
         if ($update -notmatch "failureflag.*YcszFirewall") { throw 'update does not preserve SCM failure flag' }
     }
+    Check 'Driverless delivery gates' {
+        $program=Get-Content (Join-Path $repo 'src\Ycsz.App\Program.cs') -Raw
+        $status=Get-Content (Join-Path $repo 'src\Ycsz.Core\SelfProtection.cs') -Raw
+        $ui=Get-Content (Join-Path $repo 'src\Ycsz.App\Ui.cs') -Raw
+        $readme=Get-Content (Join-Path $repo 'README.md') -Raw
+        foreach ($needle in @('BeginDriverlessMaintenance','EndDriverlessMaintenance','SelfProtectionStatus.Driverless','管理员维护窗口已授权','!protectedService || protectionReady')) {
+            if ($program -notmatch [regex]::Escape($needle) -and $status -notmatch [regex]::Escape($needle)) { throw "Driverless application maintenance gate missing: $needle" }
+        }
+        if ($program -match '!protectedService \|\| selfProtection==null \|\| !CanStopForRequest') { throw 'Driverless authenticated stop remains blocked by the historical driver guard' }
+        foreach ($needle in @('无驱动模式','不承诺抵抗完整管理员','管理员维护停服')) {
+            if ($ui -notmatch [regex]::Escape($needle) -and $readme -notmatch [regex]::Escape($needle)) { throw "Driverless wording missing: $needle" }
+        }
+        if ($status -notmatch 'DriverlessMode' -or $status -notmatch 'DriverlessMaintenanceAuthorized') { throw 'Driverless status is not represented separately from failed driver activation' }
+    }
+    Check 'Driverless security fixture gates' {
+        $probe=Get-Content (Join-Path $repo 'src\Ycsz.Probes\SecurityProbe.cs') -Raw
+        $security=Get-Content (Join-Path $repo 'scripts\Test-Security.ps1') -Raw
+        foreach ($needle in @('standard user cannot delete installed helper','standard user cannot delete protected credentials','standard user cannot acquire service terminate handle','DriverlessMaintenance','WaitForServiceState','StartFixtureService')) {
+            if ($probe -notmatch [regex]::Escape($needle)) { throw "Real standard-token fixture gate missing: $needle" }
+        }
+        if ($security -notmatch 'YcszProtection' -or $security -notmatch 'historical kernel-driver service') { throw 'Security fixture does not refuse a pre-existing driver environment' }
+    }
+    Check 'Installer ACL and command-result gates' {
+        $installer=Get-Content (Join-Path $repo 'installer\Ycsz.nsi') -Raw
+        $storage=Get-Content (Join-Path $repo 'src\Ycsz.App\Storage.cs') -Raw
+        foreach ($needle in @('/inheritance:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F','*S-1-5-32-545:(OI)(CI)RX','RepairPayloadAcl','/setowner','Pop $0')) {
+            if ($installer -notmatch [regex]::Escape($needle)) { throw "Installer ACL/error gate missing: $needle" }
+        }
+        if ($storage -notmatch 'SetAccessRuleProtection\(true,false\)' -or $storage -notmatch 'WellKnownSidType.LocalSystemSid' -or $storage -notmatch 'WellKnownSidType.BuiltinAdministratorsSid') { throw 'ProgramData ACL is not product-scoped' }
+        if ($installer -match 'YcszProtection') { throw 'Historical driver must not enter the default installer' }
+    }
     Check 'PowerShell scripts parse' {
         $parseErrors = @()
         foreach ($script in Get-ChildItem (Join-Path $repo 'scripts') -Filter '*.ps1') {
@@ -98,6 +129,7 @@ if ($Mode -eq 'Static') {
     Check 'Service identity and path' { $s=Get-CimInstance Win32_Service -Filter "Name='YcszFirewall'"; if ($s.StartName -ne 'LocalSystem' -or $s.PathName -notlike "*$InstallDir*") { throw ($s | Out-String) } }
     Check 'Uninstall entry visible' { $r=Get-ItemProperty HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\YcszFirewall; if (!$r.DisplayName -or $r.SystemComponent -eq 1) { throw 'Missing or hidden entry' } }
     Check 'Protected directory ACL' { $acl=Get-Acl "$env:ProgramData\YcszFirewall"; if (!$acl.AreAccessRulesProtected) { throw 'ACL inherits parent permissions' }; foreach ($r in $acl.Access) { $sid=$r.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value; if ($sid -notin @('S-1-5-18','S-1-5-32-544')) { throw "Unexpected ACL principal $sid" } } }
+    Check 'Protected install ACL' { $acl=Get-Acl $InstallDir; if (!$acl.AreAccessRulesProtected) { throw 'Install ACL inherits parent permissions' }; foreach ($r in $acl.Access) { $sid=$r.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value; if ($sid -notin @('S-1-5-18','S-1-5-32-544','S-1-5-32-545')) { throw "Unexpected install ACL principal $sid" }; if ($sid -eq 'S-1-5-32-545' -and (($r.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Write) -ne 0 -or ($r.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Delete) -ne 0)) { throw 'Standard users have install write/delete rights' } } }
     Check 'Configuration uses protected binary' { $b=[IO.File]::ReadAllBytes("$env:ProgramData\YcszFirewall\settings.bin"); if ($b.Length -lt 32 -or $b[0] -eq 123) { throw 'Configuration missing or appears plaintext' } }
     Check 'Executable PE signature' { $b=[IO.File]::ReadAllBytes("$InstallDir\Ycsz.exe"); if ($b[0] -ne 77 -or $b[1] -ne 90) { throw 'Not a PE image' } }
     Check 'SCM failure recovery configured' { $r=Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Services\YcszFirewall; if (!$r.FailureActions) { throw 'Missing failure actions' } }
@@ -107,6 +139,9 @@ if ($Mode -eq 'Static') {
             if ($driver.Status -ne 'Running') { throw 'YcszProtection is registered but not Running' }
             $probe=Start-Process (Join-Path $InstallDir 'Ycsz.exe') -ArgumentList @('--protection-status') -Wait -PassThru -WindowStyle Hidden
             if ($probe.ExitCode -ne 0) { throw 'YcszProtection is Running but v4 activation was not confirmed' }
+        } else {
+            $probe=Start-Process (Join-Path $InstallDir 'Ycsz.exe') -ArgumentList @('--protection-status') -Wait -PassThru -WindowStyle Hidden
+            if ($probe.ExitCode -ne 0) { throw 'Default no-driver delivery did not report a healthy driverless status' }
         }
     }
 }

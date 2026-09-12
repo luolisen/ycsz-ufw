@@ -129,6 +129,8 @@ namespace Ycsz {
         readonly bool protectedService;
         readonly object lifecycleLock=new object();
         string pendingStopSession;
+        string driverlessMaintenanceSession;
+        DateTime driverlessMaintenanceUntilUtc=DateTime.MinValue;
         bool stopping;
         bool cleanupStarted;
         public HostService() {
@@ -141,15 +143,18 @@ namespace Ycsz {
         protected override void OnStart(string[] args) {
             Store.Initialize(); settings=Store.Load<Settings>("settings.bin");
             if(settings.Role=="client") guard=new Guard(settings); else if(settings.Role=="manager") manager=new Manager(settings); else throw new InvalidDataException("角色无效");
-            selfProtection=new SelfProtectionCoordinator(
-                new WindowsSelfProtectionTransport(Store.Root),
-                ()=>ProtectionIdentity.CaptureCurrent(Path.Combine(Store.Bin,"Ycsz.exe")),
-                (session,operation)=>!String.IsNullOrWhiteSpace(session),
-                TimeSpan.FromMinutes(5),
-                ()=>SelfProtectionFilePreflight.Check(Path.GetDirectoryName(Path.Combine(Store.Bin,"Ycsz.exe")),Store.Root));
-            bool protectionReady=!protectedService || selfProtection.Activate(DateTime.UtcNow);
-            Store.Log("Self protection: "+selfProtection.Status.UserText());
-            selfProtectionTimer=new System.Threading.Timer(x=>RefreshSelfProtection(),null,1000,1000);
+            bool protectionReady=true;
+            if(protectedService) {
+                selfProtection=new SelfProtectionCoordinator(
+                    new WindowsSelfProtectionTransport(Store.Root),
+                    ()=>ProtectionIdentity.CaptureCurrent(Path.Combine(Store.Bin,"Ycsz.exe")),
+                    (session,operation)=>!String.IsNullOrWhiteSpace(session),
+                    TimeSpan.FromMinutes(5),
+                    ()=>SelfProtectionFilePreflight.Check(Path.GetDirectoryName(Path.Combine(Store.Bin,"Ycsz.exe")),Store.Root));
+                protectionReady=selfProtection.Activate(DateTime.UtcNow);
+                selfProtectionTimer=new System.Threading.Timer(x=>RefreshSelfProtection(),null,1000,1000);
+            }
+            Store.Log("Protection: "+GetProtectionStatus().UserText());
             ipc=new IpcServer(settings,Handle,AfterReply);
             if(protectedService && !protectionReady) Store.Log("Tray supervisor withheld because kernel self-protection activation was not confirmed");
             try {
@@ -185,23 +190,23 @@ namespace Ycsz {
         }
         Packet Handle(Packet request) {
             if(request!=null && request.Op=="self-protection-status") {
-                var state=selfProtection==null?SelfProtectionStatus.Unavailable("驱动未构建或未加载"):selfProtection.Status;
-                return new Packet { Ok=state.State==SelfProtectionState.Active && state.DriverLoaded && state.ProcessProtectionActive && state.FileProtectionActive,Status=state.UserText() };
+                var state=GetProtectionStatus();
+                return new Packet { Ok=state.DriverlessMode || (state.State==SelfProtectionState.Active && state.DriverLoaded && state.ProcessProtectionActive && state.FileProtectionActive),Status=state.UserText() };
             }
             if(request!=null && request.Op=="self-protection-enter") return ChangeSelfProtection(request,true);
             if(request!=null && request.Op=="self-protection-exit") return ChangeSelfProtection(request,false);
             if(request!=null && request.Op=="self-protection-prepare-unload") return PrepareSelfProtectionUnload(request);
             if(request!=null && request.Op=="self-protection-stop") {
                 lock(lifecycleLock) {
-                    if(stopping || !protectedService || selfProtection==null || !CanStopForRequest(request.Token,DateTime.UtcNow))
-                        return new Packet { Error="停服需要当前登录会话的有效自保护维护授权" };
+                    if(stopping || !CanStopForRequest(request.Token,DateTime.UtcNow))
+                        return new Packet { Error="停服需要当前登录会话的有效管理员维护授权" };
                     pendingStopSession=request.Token;
                     return new Packet { Ok=true,Status="维护停服请求已接受" };
                 }
             }
             var reply=guard!=null?guard.Command(request):manager.Command(request);
             if(reply==null) return null;
-            var protection=selfProtection==null?SelfProtectionStatus.Unavailable("驱动未构建或未加载"):selfProtection.Status;
+            var protection=GetProtectionStatus();
             if(request.Op=="status") reply.Status=SelfProtectionStatus.Append(reply.Status,protection);
             else if(request.Op=="details" && settings.Role=="client" && !String.IsNullOrWhiteSpace(reply.Data)) {
                 var state=Json.Decode<ClientState>(reply.Data); state.Status=SelfProtectionStatus.Append(state.Status,protection); reply.Data=Json.Encode(state);
@@ -212,26 +217,28 @@ namespace Ycsz {
             lock(lifecycleLock) {
             if(stopping) return new Packet { Error="服务正在维护停止" };
             bool accepted=false;
-            if(selfProtection!=null) {
+            if(!protectedService) {
+                accepted=enter?BeginDriverlessMaintenance(request.Token,DateTime.UtcNow):EndDriverlessMaintenance(request.Token,DateTime.UtcNow);
+            } else if(selfProtection!=null) {
                 accepted=enter?selfProtection.BeginMaintenance(request.Token,DateTime.UtcNow):selfProtection.EndMaintenance(request.Token,DateTime.UtcNow);
-
             }
-            var status=selfProtection==null?SelfProtectionStatus.Unavailable("驱动未构建或未加载"):selfProtection.Status;
-            Store.Log("Self protection maintenance "+(enter?"enter":"exit")+": "+(accepted?"accepted":"rejected"));
-            return new Packet { Ok=accepted,Status=status.UserText(),Error=accepted?null:(status.Failure??(enter?"无法进入自保护维护窗口":"无法结束自保护维护窗口")) };
+            var status=GetProtectionStatusLocked(DateTime.UtcNow);
+            Store.Log((protectedService?"Self protection":"Administrator")+" maintenance "+(enter?"enter":"exit")+": "+(accepted?"accepted":"rejected"));
+            return new Packet { Ok=accepted,Status=status.UserText(),Error=accepted?null:(status.Failure??(enter?"无法进入管理员维护窗口":"无法结束管理员维护窗口")) };
         }
         }
         Packet PrepareSelfProtectionUnload(Packet request) {
             lock(lifecycleLock) {
-                if(stopping || selfProtection==null) return new Packet { Error="服务正在停止或自保护未初始化" };
-                bool accepted=selfProtection.PrepareUnload(request.Token,DateTime.UtcNow);
-                var status=selfProtection.Status;
+                if(stopping) return new Packet { Error="服务正在停止或自保护未初始化" };
+                bool accepted=!protectedService?IsDriverlessMaintenanceForSession(request.Token,DateTime.UtcNow):selfProtection!=null && selfProtection.PrepareUnload(request.Token,DateTime.UtcNow);
+                var status=GetProtectionStatusLocked(DateTime.UtcNow);
                 Store.Log("Self protection prepare unload: "+(accepted?"accepted":"rejected"));
-                return new Packet { Ok=accepted,Status=status.UserText(),Error=accepted?null:(status.Failure??"无法准备驱动卸载") };
+                return new Packet { Ok=accepted,Status=status.UserText(),Error=accepted?null:(status.Failure??(protectedService?"无法准备驱动卸载":"请先进入管理员维护窗口")) };
             }
         }
         bool CanStopForRequest(string session,DateTime utcNow) {
-            return selfProtection.CanStopService(session,utcNow) || selfProtection.CanStopForRecovery(session,utcNow);
+            if(!protectedService) return IsDriverlessMaintenanceForSession(session,utcNow);
+            return selfProtection!=null && (selfProtection.CanStopService(session,utcNow) || selfProtection.CanStopForRecovery(session,utcNow));
         }
         void AfterReply(Packet request,Packet reply) {
             if(request==null || request.Op!="self-protection-stop" || reply==null || !reply.Ok) return;
@@ -253,7 +260,7 @@ namespace Ycsz {
         void StopComponents(TrayStopReason reason) {
             lock(lifecycleLock) {
                 if(cleanupStarted) return;
-                cleanupStarted=true; stopping=true; pendingStopSession=null;
+                cleanupStarted=true; stopping=true; pendingStopSession=null; driverlessMaintenanceSession=null; driverlessMaintenanceUntilUtc=DateTime.MinValue;
             }
             if(reason==TrayStopReason.ServiceStopping) RequestAdditionalTime(120000);
             if(selfProtectionTimer!=null) { selfProtectionTimer.Dispose(); selfProtectionTimer=null; }
@@ -269,6 +276,39 @@ namespace Ycsz {
                 if(stopping || selfProtection==null) return;
                 selfProtection.Tick(DateTime.UtcNow);
             }
+        }
+
+        bool BeginDriverlessMaintenance(string session,DateTime utcNow) {
+            if(String.IsNullOrWhiteSpace(session)) return false;
+            if(IsDriverlessMaintenanceActive(utcNow) && !String.Equals(driverlessMaintenanceSession,session,StringComparison.Ordinal)) return false;
+            driverlessMaintenanceSession=session; driverlessMaintenanceUntilUtc=utcNow.ToUniversalTime().AddMinutes(5); return true;
+        }
+
+        bool EndDriverlessMaintenance(string session,DateTime utcNow) {
+            if(!IsDriverlessMaintenanceForSession(session,utcNow)) return false;
+            driverlessMaintenanceSession=null; driverlessMaintenanceUntilUtc=DateTime.MinValue; return true;
+        }
+
+        bool IsDriverlessMaintenanceForSession(string session,DateTime utcNow) {
+            if(String.IsNullOrWhiteSpace(session) || !IsDriverlessMaintenanceActive(utcNow) || !String.Equals(driverlessMaintenanceSession,session,StringComparison.Ordinal)) return false;
+            return true;
+        }
+
+        bool IsDriverlessMaintenanceActive(DateTime utcNow) {
+            if(String.IsNullOrWhiteSpace(driverlessMaintenanceSession)) return false;
+            if(utcNow.ToUniversalTime()>=driverlessMaintenanceUntilUtc) {
+                driverlessMaintenanceSession=null; driverlessMaintenanceUntilUtc=DateTime.MinValue; return false;
+            }
+            return true;
+        }
+
+        SelfProtectionStatus GetProtectionStatus() {
+            lock(lifecycleLock) return GetProtectionStatusLocked(DateTime.UtcNow);
+        }
+
+        SelfProtectionStatus GetProtectionStatusLocked(DateTime utcNow) {
+            if(!protectedService) return SelfProtectionStatus.Driverless(IsDriverlessMaintenanceActive(utcNow),driverlessMaintenanceUntilUtc);
+            return selfProtection==null?SelfProtectionStatus.Unavailable("驱动未构建或未加载"):selfProtection.Status;
         }
     }
 }

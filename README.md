@@ -4,6 +4,8 @@
 
 当前版本为 **v1.0.1 修复版**。已完成 Windows 自动化验证和管理端实机卸载、重装、登录验收；完整客户端网络阻断与多机联调仍待验证。产品提供网络与配置保护，不提供磁盘快照或整机重启还原。
 
+当前默认交付为**无自研内核驱动模式**：核心服务以 LocalSystem 运行，安装目录和 `ProgramData\YcszFirewall` 由 SYSTEM/Administrators 管理，普通学生账户的服务控制、进程终止和文件修改会被 Windows 权限边界拒绝；SCM 负责异常恢复，托盘只负责用户会话入口与监督恢复。管理密码认证后可进入短时管理员维护窗口，用于停服、更新和卸载。该模式不承诺抵抗完整 Windows 管理员、SYSTEM、内核代码或离线磁盘修改，也不把服务/托盘恢复冒充为内核防终止。
+
 ## 下载
 
 前往 [v1.0.1 发布页](https://github.com/luolisen/ycsz-ufw/releases/tag/v1.0.1) 下载。
@@ -73,7 +75,7 @@
 本版安装器不支持直接覆盖已有安装。管理端重装按以下顺序执行：
 
 1. 备份 `C:\ProgramData\YcszFirewall` 到仅管理员可访问的位置。
-2. 从本机管理页点击“卸载本机软件”，或使用控制面板卸载入口；通过 UAC 和管理密码验证后，在卸载向导中完成卸载。
+2. 从本机管理页进入“管理员维护”，点击“管理员维护停服”，或使用控制面板卸载入口；通过 UAC 和管理密码验证后，在卸载向导中完成卸载。
 3. 确认旧服务和安装登记已移除，再清理原安装目录。卸载会保留配置与日志，需将残留 `C:\ProgramData\YcszFirewall` 移至安全归档位置。
 4. 运行新版完整安装包，选择管理端并重新初始化。
 5. 验证服务、管理端登录和设备接入。
@@ -93,14 +95,14 @@
 | 验证环境 | 结果 |
 | --- | --- |
 | Windows CI | 44 项逻辑/ABI、2 项真实回环 TLS、9 项隔离网络逻辑测试通过；PowerShell 语法检查和四种 NSIS 打包通过；新增 9 种运行库处理分支测试通过 |
-| 一次性 Windows 安全测试环境 | 39 条 PASS，覆盖标准用户权限限制、管理认证、设备身份隔离、撤销、服务恢复与持久化等 |
+| 一次性 Windows 安全测试环境 | 覆盖标准用户权限限制、管理认证、服务进程终止句柄、服务停止权限、安装文件删除/覆盖、SCM 恢复与持久化；托盘桌面验收需在有真实交互会话的隔离 Windows 上补测 |
 | 远程 Windows 管理主机 | v1.0.0 管理端安装与原密码登录通过；服务为 Running / AUTO_START / LocalSystem，程序哈希与发布产物一致；两种客户端 ZIP 实际导出通过 |
 
 安全测试包含以无害程序副本验证进程名称检测，详细步骤与证据见 [通用客户端与反破坏验证](docs/UNIVERSAL-CLIENT-SECURITY.md)。这不代表完成了所有提权路径测试。缺少 .NET 4.8 的旧 Windows 实际安装及重启、不内置管理端在线获取内置客户端安装器、客户端 WFP 实际阻断、网卡/代理回滚、双机策略联调及 Windows 重启场景仍待验收。
 
 ## 已知限制
 
-- 防破坏针对标准用户；合法 Windows 管理员仍保留停止、恢复和卸载能力，不承诺抵御 SYSTEM、内核或离线磁盘修改。
+- 无驱动防破坏只针对标准用户；合法 Windows 管理员仍保留停止、恢复、更新和卸载能力，不承诺抵御 SYSTEM、内核或离线磁盘修改。
 - 网站白名单按域名解析出的 IP 放行 TCP 80/443。共享 CDN IP 可能使其他域名一并可达；不解密 TLS，不提供严格 HTTPS 域名过滤。
 - 预置域名是待审核候选，不是全部备案网站，也未逐项实时核验 ICP 备案。站点的依赖域名需要管理员补齐。
 - 进程按文件名识别，改名可规避名称匹配。网络出口限制是独立机制。
@@ -127,7 +129,7 @@ macOS 安装 Mono 和 NSIS 后：
 
 构建需 Python 3.8+，首次会下载并校验微软离线运行库；依赖只在构建时下载，不提交 Git。输出包含完整安装包、客户端专用安装器，各有内置版及 `NoRuntime` 版。macOS 可设置 `YCSZ_PWSH=/path/to/pwsh`，同时执行回环 TLS 和 PowerShell 语法检查。
 
-自保护驱动不随默认构建或安装包生成。具备官方 Windows WDK 的隔离开发机上，可显式执行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -SkipInstaller -BuildDriver`；这只增加 WDK 编译步骤，不代表驱动已签名、安装或加载。驱动的占位 altitude、签名和隔离动态验收见 [驱动工程说明](drivers/YcszProtection/README.md)。
+当前正式交付路径不安装或加载自研内核驱动。历史驱动源码仍保留在仓库供审计，但不属于默认构建、安装包或无驱动验收结果。具备官方 Windows WDK 的隔离开发机上，可显式执行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -SkipInstaller -BuildDriver`；这只增加 WDK 编译步骤，不代表驱动已签名、安装或加载。驱动的占位 altitude、签名和隔离动态验收见 [驱动工程说明](drivers/YcszProtection/README.md)。
 
 句柄/映射与清理边界可用 `scripts/Test-ProtectionFixtureBoundary.ps1` 在 Windows 临时目录验证；需要真实服务激活的前置句柄和可写映射采用同一进程的 `scripts/Test-ProtectionDriver.ps1 -Mode TwoPhase`，流程与外部 signal 约定见 [两阶段动态验收夹具](docs/validation/TWO-PHASE-DYNAMIC-HARNESS-2026-09-13.md)。两者都不会自动安装、加载或重启驱动/服务。
 
