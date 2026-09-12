@@ -136,6 +136,12 @@ $noControl = Resolve-ProtectionDynamicNativeFailure 5 'file-write' 'file-write' 
 if ($noControl.Status -ne 'ERROR') { throw 'An access denial without a successful control precondition was incorrectly accepted.' }
 $win32Exception = New-Object System.ComponentModel.Win32Exception(5)
 if ((Get-ProtectionNativeErrorCode $win32Exception) -ne 5) { throw 'Win32 exception error-code extraction failed.' }
+$accessException = New-Object System.UnauthorizedAccessException 'fixture access denied'
+if ((Get-ProtectionNativeErrorCode $accessException) -ne 5) { throw 'Signed HRESULT access-denied extraction failed.' }
+$missingException = New-Object System.IO.FileNotFoundException 'fixture missing'
+if ((Get-ProtectionNativeErrorCode $missingException) -ne 2) { throw 'Signed HRESULT file-not-found extraction failed.' }
+$wrappedException = New-Object System.Exception 'wrapper',$accessException
+if ((Get-ProtectionNativeErrorCode $wrappedException) -ne 5) { throw 'Inner signed HRESULT extraction failed.' }
 $unloadPass = Test-ProtectionExpectedUnloadRejection 1 'Error: ERROR_FLT_DO_NOT_DETACH (0x801F0010)' $true
 if ($unloadPass.Status -ne 'PASS') { throw 'Expected filter unload refusal was not classified as PASS.' }
 $unloadUnknown = Test-ProtectionExpectedUnloadRejection 1 'Error: invalid parameter' $true

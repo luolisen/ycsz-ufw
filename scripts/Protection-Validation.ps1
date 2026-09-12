@@ -151,8 +151,10 @@ function Get-ProtectionNativeErrorCode($ErrorRecord) {
         if ($null -ne $nativeProperty) {
             try { return [int]$nativeProperty.Value } catch { }
         }
-        $hresult = [uint32]$exception.HResult
-        if (($hresult -band [uint32]0xFFFF0000) -eq [uint32]0x80070000) {
+        # HRESULT is signed; casting a negative Int32 to UInt32 throws in
+        # PowerShell. Reinterpret its bits instead of converting its value.
+        $hresult = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$exception.HResult),0)
+        if (($hresult -band [uint32]4294901760) -eq [uint32]2147942400) {
             return [int]($hresult -band [uint32]0x0000FFFF)
         }
         $exception = $exception.InnerException
