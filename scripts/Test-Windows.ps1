@@ -34,7 +34,7 @@ if ($Mode -eq 'Static') {
             if ($program -notmatch [regex]::Escape($needle) -and $status -notmatch [regex]::Escape($needle)) { throw "Driverless application maintenance gate missing: $needle" }
         }
         if ($program -match [regex]::Escape('!protectedService || selfProtection==null || !CanStopForRequest')) { throw 'Driverless authenticated stop remains blocked by the historical driver guard' }
-        foreach ($needle in @('DriverlessMode','LocalSystem','SCM')) {
+        foreach ($needle in @('LocalSystem','ProgramData','SCM')) {
             if ($ui -notmatch [regex]::Escape($needle) -and $readme -notmatch [regex]::Escape($needle)) { throw "Driverless wording missing: $needle" }
         }
         if ($status -notmatch 'DriverlessMode' -or $status -notmatch 'DriverlessMaintenanceAuthorized') { throw 'Driverless status is not represented separately from failed driver activation' }
